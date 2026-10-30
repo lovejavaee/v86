@@ -1,59 +1,66 @@
-"use strict";
+import { LOG_NET } from "./const.js";
+import { h, hex_dump } from "./lib.js";
+import { dbg_assert, dbg_log } from "./log.js";
+
+// For Types Only
+import { CPU } from "./cpu.js";
+import { PCI } from "./pci.js";
+import { BusConnector } from "./bus.js";
 
 // http://www.ethernut.de/pdf/8019asds.pdf
 
 const NE2K_LOG_VERBOSE = false;
 const NE2K_LOG_PACKETS = false;
 
-/** @const */ var E8390_CMD = 0x00; /* The command register (for all pages) */
+const E8390_CMD = 0x00; /* The command register (for all pages) */
 
 /* Page 0 register offsets. */
-/** @const */ var EN0_CLDALO = 0x01; /* Low byte of current local dma addr RD */
-/** @const */ var EN0_STARTPG = 0x01; /* Starting page of ring bfr WR */
-/** @const */ var EN0_CLDAHI = 0x02; /* High byte of current local dma addr RD */
-/** @const */ var EN0_STOPPG = 0x02; /* Ending page +1 of ring bfr WR */
-/** @const */ var EN0_BOUNDARY = 0x03; /* Boundary page of ring bfr RD WR */
-/** @const */ var EN0_TSR = 0x04; /* Transmit status reg RD */
-/** @const */ var EN0_TPSR = 0x04; /* Transmit starting page WR */
-/** @const */ var EN0_NCR = 0x05; /* Number of collision reg RD */
-/** @const */ var EN0_TCNTLO = 0x05; /* Low byte of tx byte count WR */
-/** @const */ var EN0_FIFO = 0x06; /* FIFO RD */
-/** @const */ var EN0_TCNTHI = 0x06; /* High byte of tx byte count WR */
-/** @const */ var EN0_ISR = 0x07; /* Interrupt status reg RD WR */
-/** @const */ var EN0_CRDALO = 0x08; /* low byte of current remote dma address RD */
-/** @const */ var EN0_RSARLO = 0x08; /* Remote start address reg 0 */
-/** @const */ var EN0_CRDAHI = 0x09; /* high byte, current remote dma address RD */
-/** @const */ var EN0_RSARHI = 0x09; /* Remote start address reg 1 */
-/** @const */ var EN0_RCNTLO = 0x0a; /* Remote byte count reg WR */
-/** @const */ var EN0_RCNTHI = 0x0b; /* Remote byte count reg WR */
-/** @const */ var EN0_RSR = 0x0c; /* rx status reg RD */
-/** @const */ var EN0_RXCR = 0x0c; /* RX configuration reg WR */
-/** @const */ var EN0_TXCR = 0x0d; /* TX configuration reg WR */
-/** @const */ var EN0_COUNTER0 = 0x0d; /* Rcv alignment error counter RD */
-/** @const */ var EN0_DCFG = 0x0e; /* Data configuration reg WR */
-/** @const */ var EN0_COUNTER1 = 0x0e; /* Rcv CRC error counter RD */
-/** @const */ var EN0_IMR = 0x0f; /* Interrupt mask reg WR */
-/** @const */ var EN0_COUNTER2 = 0x0f; /* Rcv missed frame error counter RD */
+const EN0_CLDALO = 0x01; /* Low byte of current local dma addr RD */
+const EN0_STARTPG = 0x01; /* Starting page of ring bfr WR */
+const EN0_CLDAHI = 0x02; /* High byte of current local dma addr RD */
+const EN0_STOPPG = 0x02; /* Ending page +1 of ring bfr WR */
+const EN0_BOUNDARY = 0x03; /* Boundary page of ring bfr RD WR */
+const EN0_TSR = 0x04; /* Transmit status reg RD */
+const EN0_TPSR = 0x04; /* Transmit starting page WR */
+const EN0_NCR = 0x05; /* Number of collision reg RD */
+const EN0_TCNTLO = 0x05; /* Low byte of tx byte count WR */
+const EN0_FIFO = 0x06; /* FIFO RD */
+const EN0_TCNTHI = 0x06; /* High byte of tx byte count WR */
+const EN0_ISR = 0x07; /* Interrupt status reg RD WR */
+const EN0_CRDALO = 0x08; /* low byte of current remote dma address RD */
+const EN0_RSARLO = 0x08; /* Remote start address reg 0 */
+const EN0_CRDAHI = 0x09; /* high byte, current remote dma address RD */
+const EN0_RSARHI = 0x09; /* Remote start address reg 1 */
+const EN0_RCNTLO = 0x0a; /* Remote byte count reg WR */
+const EN0_RCNTHI = 0x0b; /* Remote byte count reg WR */
+const EN0_RSR = 0x0c; /* rx status reg RD */
+const EN0_RXCR = 0x0c; /* RX configuration reg WR */
+const EN0_TXCR = 0x0d; /* TX configuration reg WR */
+const EN0_COUNTER0 = 0x0d; /* Rcv alignment error counter RD */
+const EN0_DCFG = 0x0e; /* Data configuration reg WR */
+const EN0_COUNTER1 = 0x0e; /* Rcv CRC error counter RD */
+const EN0_IMR = 0x0f; /* Interrupt mask reg WR */
+const EN0_COUNTER2 = 0x0f; /* Rcv missed frame error counter RD */
 
-/** @const */ var NE_DATAPORT = 0x10; /* NatSemi-defined port window offset. */
-/** @const */ var NE_RESET = 0x1f; /* Issue a read to reset, a write to clear. */
+const NE_DATAPORT = 0x10; /* NatSemi-defined port window offset. */
+const NE_RESET = 0x1f; /* Issue a read to reset, a write to clear. */
 
 /* Bits in EN0_ISR - Interrupt status register */
-/** @const */ var ENISR_RX = 0x01; /* Receiver, no error */
-/** @const */ var ENISR_TX = 0x02; /* Transmitter, no error */
-/** @const */ var ENISR_RX_ERR = 0x04; /* Receiver, with error */
-/** @const */ var ENISR_TX_ERR = 0x08; /* Transmitter, with error */
-/** @const */ var ENISR_OVER = 0x10; /* Receiver overwrote the ring */
-/** @const */ var ENISR_COUNTERS = 0x20; /* Counters need emptying */
-/** @const */ var ENISR_RDC = 0x40; /* remote dma complete */
-/** @const */ var ENISR_RESET = 0x80; /* Reset completed */
-/** @const */ var ENISR_ALL = 0x3f; /* Interrupts we will enable */
+const ENISR_RX = 0x01; /* Receiver, no error */
+const ENISR_TX = 0x02; /* Transmitter, no error */
+const ENISR_RX_ERR = 0x04; /* Receiver, with error */
+const ENISR_TX_ERR = 0x08; /* Transmitter, with error */
+const ENISR_OVER = 0x10; /* Receiver overwrote the ring */
+const ENISR_COUNTERS = 0x20; /* Counters need emptying */
+const ENISR_RDC = 0x40; /* remote dma complete */
+const ENISR_RESET = 0x80; /* Reset completed */
+const ENISR_ALL = 0x3f; /* Interrupts we will enable */
 
-/** @const */ var ENRSR_RXOK = 0x01; /* Received a good packet */
+const ENRSR_RXOK = 0x01; /* Received a good packet */
 
-/** @const */ var START_PAGE = 0x40;
-/** @const */ var START_RX_PAGE = 0x40 + 12;
-/** @const */ var STOP_PAGE = 0x80;
+const START_PAGE = 0x40;
+const START_RX_PAGE = 0x40 + 12;
+const STOP_PAGE = 0x80;
 
 
 // Search and replace MAC addresses in ethernet, arp and dhcp packets.
@@ -226,7 +233,7 @@ function translate_mac_address(packet, search_mac, replacement_mac)
     }
 }
 
-function format_mac(mac)
+export function format_mac(mac)
 {
     return [
         mac[0].toString(16).padStart(2, "0"),
@@ -286,8 +293,9 @@ function dump_packet(packet, prefix)
  * @param {BusConnector} bus
  * @param {Boolean} preserve_mac_from_state_image
  * @param {Boolean} mac_address_translation
+ * @param {number} [id=0] id
  */
-function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation)
+export function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation, id)
 {
     /** @const @type {CPU} */
     this.cpu = cpu;
@@ -295,22 +303,22 @@ function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation)
     /** @const @type {PCI} */
     this.pci = cpu.devices.pci;
 
+    this.id = id || 0;
     this.preserve_mac_from_state_image = preserve_mac_from_state_image;
     this.mac_address_translation = mac_address_translation;
 
     /** @const @type {BusConnector} */
     this.bus = bus;
-    this.bus.register("net0-receive", function(data)
+    this.bus.register("net" + this.id + "-receive", function(data)
     {
         this.receive(data);
     }, this);
 
-    this.port = 0x300;
+    this.port = 0x300 + 0x100 * this.id;
 
     this.name = "ne2k";
 
-    /** @const */
-    var use_pci = true;
+    const use_pci = true;
 
     if(use_pci)
     {
@@ -320,7 +328,7 @@ function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation)
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf4, 0x1a, 0x00, 0x11,
             0x00, 0x00, 0xb8, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
         ];
-        this.pci_id = 0x05 << 3;
+        this.pci_id = (this.id === 0 ? 0x05 : (0x07 + this.id)) << 3;
         this.pci_bars = [
             {
                 size: 32,
@@ -353,6 +361,11 @@ function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation)
         Math.random() * 255 | 0,
     ]);
 
+    this.bus.send("net" + this.id + "-mac", format_mac(this.mac));
+
+    // multicast addresses
+    this.mar = Uint8Array.of(0xFF, 0xFF, 0xFF, 0xFF,  0xFF, 0xFF, 0xFF, 0xFF);
+
     // Used for mac address translation
     // The mac the OS thinks it has
     this.mac_address_in_state = null;
@@ -383,7 +396,12 @@ function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation)
     {
         dbg_log("Read cmd", LOG_NET);
         return this.cr;
-    });
+    }, function()
+    {
+        dbg_log("Read16 cmd", LOG_NET);
+        return this.cr;
+    }
+    );
 
     io.register_write(this.port | E8390_CMD, this, function(data_byte)
     {
@@ -416,7 +434,7 @@ function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation)
                 translate_mac_address(data, this.mac_address_in_state, this.mac);
             }
 
-            this.bus.send("net0-send", data);
+            this.bus.send("net" + this.id + "-send", data);
             this.bus.send("eth-transmit-end", [data.length]);
             this.cr &= ~4;
             this.do_interrupt(ENISR_TX);
@@ -427,17 +445,35 @@ function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation)
 
     io.register_read(this.port | EN0_COUNTER0, this, function()
     {
-        dbg_log("Read counter0", LOG_NET);
-        return 0;
+        var pg = this.get_page();
+        if(pg === 1)
+        {
+            dbg_log("Read mar5", LOG_NET);
+            return this.mar[5];
+        }
+        else
+        {
+            dbg_log("Read counter0 pg=" + pg, LOG_NET);
+            return 0;
+        }
     });
 
     io.register_read(this.port | EN0_COUNTER1, this, function()
     {
-        dbg_log("Read8 counter1", LOG_NET);
-        return 0;
+        var pg = this.get_page();
+        if(pg === 1)
+        {
+            dbg_log("Read mar6", LOG_NET);
+            return this.mar[6];
+        }
+        else
+        {
+            dbg_log("Read8 counter1 pg=" + pg, LOG_NET);
+            return 0;
+        }
     }, function()
     {
-        dbg_log("Read16 counter1", LOG_NET);
+        dbg_log("Read16 counter1 pg=" + this.get_page(), LOG_NET);
         // openbsd
         return 0;
     }
@@ -445,8 +481,17 @@ function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation)
 
     io.register_read(this.port | EN0_COUNTER2, this, function()
     {
-        dbg_log("Read counter2", LOG_NET);
-        return 0;
+        var pg = this.get_page();
+        if(pg === 1)
+        {
+            dbg_log("Read mar7", LOG_NET);
+            return this.mar[7];
+        }
+        else
+        {
+            dbg_log("Read counter2 pg=" + pg, LOG_NET);
+            return 0;
+        }
     });
 
     io.register_read(this.port | NE_RESET, this, function()
@@ -578,6 +623,7 @@ function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation)
         else
         {
             dbg_assert(false);
+            return 0;
         }
     });
 
@@ -638,6 +684,11 @@ function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation)
             dbg_log("Read pg0/0a", LOG_NET);
             return 0x50;
         }
+        else if(pg === 1)
+        {
+            dbg_log("Read mar2", LOG_NET);
+            return this.mar[2];
+        }
         else
         {
             dbg_assert(false, "TODO");
@@ -666,6 +717,11 @@ function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation)
         {
             dbg_log("Read pg0/0b", LOG_NET);
             return 0x43;
+        }
+        else if(pg === 1)
+        {
+            dbg_log("Read mar3", LOG_NET);
+            return this.mar[3];
         }
         else
         {
@@ -696,10 +752,16 @@ function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation)
             dbg_log("Read remote start address low", LOG_NET);
             return this.rsar & 0xFF;
         }
+        else if(pg === 1)
+        {
+            dbg_log("Read mar0", LOG_NET);
+            return this.mar[0];
+        }
         else
         {
             dbg_log("Unimplemented: Read pg" + pg + "/08", LOG_NET);
             dbg_assert(false);
+            return 0;
         }
     });
 
@@ -725,10 +787,16 @@ function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation)
             dbg_log("Read remote start address high", LOG_NET);
             return this.rsar >> 8 & 0xFF;
         }
+        else if(pg === 1)
+        {
+            dbg_log("Read mar1", LOG_NET);
+            return this.mar[1];
+        }
         else
         {
             dbg_log("Unimplemented: Read pg" + pg + "/09", LOG_NET);
             dbg_assert(false);
+            return 0;
         }
     });
 
@@ -954,6 +1022,11 @@ function Ne2k(cpu, bus, preserve_mac_from_state_image, mac_address_translation)
         {
             return 1 | 1 << 3; // receive status ok
         }
+        else if(pg === 1)
+        {
+            dbg_log("Read mar4", LOG_NET);
+            return this.mar[4];
+        }
         else
         {
             dbg_log("Unimplemented: Read pg" + pg + "/0c", LOG_NET);
@@ -1048,6 +1121,7 @@ Ne2k.prototype.set_state = function(state)
             " guest_os_mac=" + format_mac(this.mac_address_in_state) +
             " real_mac=" + format_mac(this.mac), LOG_NET);
     }
+    this.bus.send("net" + this.id + "-mac", format_mac(this.mac));
 };
 
 Ne2k.prototype.do_interrupt = function(ir_mask)

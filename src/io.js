@@ -1,4 +1,12 @@
-"use strict";
+import { LOG_IO, MMAP_BLOCK_BITS, MMAP_BLOCK_SIZE, MMAP_MAX } from "./const.js";
+import { h } from "./lib.js";
+import { dbg_assert, dbg_log } from "./log.js";
+
+// For Types Only
+import { CPU } from "./cpu.js";
+
+// Enables logging all IO port reads and writes. Very verbose
+const LOG_ALL_IO = false;
 
 /**
  * The ISA IO bus
@@ -7,7 +15,7 @@
  * @constructor
  * @param {CPU} cpu
  */
-function IO(cpu)
+export function IO(cpu)
 {
     /** @const */
     this.ports = [];
@@ -29,7 +37,7 @@ function IO(cpu)
         cpu.memory_map_read32[i] = cpu.memory_map_write32[i] = undefined;
     }
 
-    this.mmap_register(memory_size, 0x100000000 - memory_size,
+    this.mmap_register(memory_size, MMAP_MAX - memory_size,
         function(addr) {
             // read outside of the memory size
             dbg_log("Read from unmapped memory space, addr=" + h(addr >>> 0, 8), LOG_IO);
@@ -87,9 +95,9 @@ IO.prototype.empty_port_write = function(x)
 /**
  * @param {number} port_addr
  * @param {Object} device
- * @param {function():number=} r8
- * @param {function():number=} r16
- * @param {function():number=} r32
+ * @param {function(number):number=} r8
+ * @param {function(number):number=} r16
+ * @param {function(number):number=} r32
  */
 IO.prototype.register_read = function(port_addr, device, r8, r16, r32)
 {
@@ -354,8 +362,9 @@ IO.prototype.port_read8 = function(port_addr)
             LOG_IO
         );
     }
-    var value = entry.read8.call(entry.device);
-    dbg_assert(value < 0x100, "8 bit port returned large value: " + h(port_addr));
+    var value = entry.read8.call(entry.device, port_addr);
+    dbg_assert(typeof value === "number");
+    if(value < 0 || value >= 0x100) dbg_assert(false, "8 bit port returned large value: " + h(port_addr));
     return value;
 };
 
@@ -370,8 +379,9 @@ IO.prototype.port_read16 = function(port_addr)
             LOG_IO
         );
     }
-    var value = entry.read16.call(entry.device);
-    dbg_assert(value < 0x10000 && value >= 0, "16 bit port returned large value: " + h(port_addr));
+    var value = entry.read16.call(entry.device, port_addr);
+    dbg_assert(typeof value === "number");
+    if(value < 0 || value >= 0x10000) dbg_assert(false, "16 bit port returned large value: " + h(port_addr));
     return value;
 };
 
@@ -386,7 +396,7 @@ IO.prototype.port_read32 = function(port_addr)
             LOG_IO
         );
     }
-    var value = entry.read32.call(entry.device);
+    var value = entry.read32.call(entry.device, port_addr);
     dbg_assert((value | 0) === value);
     return value;
 };

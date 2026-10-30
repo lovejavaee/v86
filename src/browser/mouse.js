@@ -1,14 +1,16 @@
-"use strict";
+import { dbg_log } from "../log.js";
+
+// For Types Only
+import { BusConnector } from "../bus.js";
 
 /**
  * @constructor
  *
  * @param {BusConnector} bus
  */
-function MouseAdapter(bus, screen_container)
+export function MouseAdapter(bus, screen_container)
 {
-    /** @const */
-    var SPEED_FACTOR = 0.15;
+    const SPEED_FACTOR = 1;
 
     var left_down = false,
         right_down = false,
@@ -25,11 +27,21 @@ function MouseAdapter(bus, screen_container)
     // set by emulator
     this.emu_enabled = true;
 
+    // set by the guest's absolute pointing device driver
+    this.absolute_mouse = false;
+
     this.bus = bus;
 
     this.bus.register("mouse-enable", function(enabled)
     {
         this.enabled = enabled;
+        this.update_cursor();
+    }, this);
+
+    this.bus.register("vmware-absolute-mouse", function(enabled)
+    {
+        this.absolute_mouse = enabled;
+        this.update_cursor();
     }, this);
 
     // TODO: Should probably not use bus for this
@@ -42,6 +54,15 @@ function MouseAdapter(bus, screen_container)
     {
         this.is_running = true;
     }, this);
+
+    this.update_cursor = function()
+    {
+        if(screen_container)
+        {
+            const hide = this.absolute_mouse && this.enabled && this.emu_enabled;
+            screen_container.style.cursor = hide ? "none" : "";
+        }
+    };
 
     this.destroy = function()
     {
@@ -56,6 +77,8 @@ function MouseAdapter(bus, screen_container)
         window.removeEventListener("mousedown", mousedown_handler, false);
         window.removeEventListener("mouseup", mouseup_handler, false);
         window.removeEventListener("wheel", mousewheel_handler, { passive: false });
+        window.removeEventListener("contextmenu", contextmenu_handler, false);
+        document.removeEventListener("pointerlockchange", pointerlockchange_handler, false);
     };
 
     this.init = function()
@@ -73,8 +96,23 @@ function MouseAdapter(bus, screen_container)
         window.addEventListener("mousedown", mousedown_handler, false);
         window.addEventListener("mouseup", mouseup_handler, false);
         window.addEventListener("wheel", mousewheel_handler, { passive: false });
+        window.addEventListener("contextmenu", contextmenu_handler, false);
+        document.addEventListener("pointerlockchange", pointerlockchange_handler, false);
     };
     this.init();
+
+    function pointerlockchange_handler()
+    {
+        mouse.bus.send("mouse-pointer-lock", !!document.pointerLockElement);
+    }
+
+    function contextmenu_handler(e)
+    {
+        if(may_handle(e))
+        {
+            e.preventDefault();
+        }
+    }
 
     function is_child(child, parent)
     {
@@ -218,14 +256,18 @@ function MouseAdapter(bus, screen_container)
 
         delta_y = -delta_y;
 
+        // NOTE: affected by https://issues.chromium.org/issues/40737979
+        //       Causes cursor jumps on multi-monitor and/or 120+ HZ monitors
+
         mouse.bus.send("mouse-delta", [delta_x, delta_y]);
 
-        if(screen_container)
+        // Under pointer lock the page coordinates don't change, so no
+        // meaningful absolute position can be reported
+        if(screen_container && !document.pointerLockElement)
         {
-            let absolute_x = e.pageX - screen_container.offsetLeft;
-            let absolute_y = e.pageY - screen_container.offsetTop;
+            const rect = screen_container.getBoundingClientRect();
             mouse.bus.send("mouse-absolute", [
-                absolute_x, absolute_y, screen_container.offsetWidth, screen_container.offsetHeight]);
+                e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height]);
         }
     }
 
@@ -270,6 +312,13 @@ function MouseAdapter(bus, screen_container)
         }
         mouse.bus.send("mouse-click", [left_down, middle_down, right_down]);
         e.preventDefault();
+
+        if(down)
+        {
+            // preventDefault also prevents the default behavior of focusing the window
+            // (relevant when embedded in an iframe), so do it manually to capture the keys
+            window.focus();
+        }
     }
 
     function mousewheel_handler(e)

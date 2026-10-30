@@ -1,14 +1,20 @@
-"use strict";
+import { LOG_PS2 } from "./const.js";
+import { h } from "./lib.js";
+import { dbg_log } from "./log.js";
 
-/** @const */
-let PS2_LOG_VERBOSE = false;
+// For Types Only
+import { CPU } from "./cpu.js";
+import { BusConnector } from "./bus.js";
+import { ByteQueue } from "./lib.js";
+
+const PS2_LOG_VERBOSE = false;
 
 /**
  * @constructor
  * @param {CPU} cpu
  * @param {BusConnector} bus
  */
-function PS2(cpu, bus)
+export function PS2(cpu, bus)
 {
     /** @const @type {CPU} */
     this.cpu = cpu;
@@ -16,6 +22,45 @@ function PS2(cpu, bus)
     /** @const @type {BusConnector} */
     this.bus = bus;
 
+    this.reset();
+
+    this.bus.register("keyboard-code", function(code)
+    {
+        this.kbd_send_code(code);
+    }, this);
+
+    this.bus.register("mouse-click", function(data)
+    {
+        this.mouse_send_click(data[0], data[1], data[2]);
+    }, this);
+
+    this.bus.register("mouse-delta", function(data)
+    {
+        this.mouse_send_delta(data[0], data[1]);
+    }, this);
+
+    this.bus.register("mouse-wheel", function(data)
+    {
+        if(!this.have_mouse || !this.use_mouse || !this.mouse_stream_active())
+        {
+            return;
+        }
+
+        this.wheel_movement -= data[0];
+        this.wheel_movement -= data[1] * 2; // X Wheel Movement
+        this.wheel_movement = Math.min(7, Math.max(-8, this.wheel_movement));
+        this.send_mouse_packet(0, 0);
+    }, this);
+
+    cpu.io.register_read(0x60, this, this.port60_read);
+    cpu.io.register_read(0x64, this, this.port64_read);
+
+    cpu.io.register_write(0x60, this, this.port60_write);
+    cpu.io.register_write(0x64, this, this.port64_write);
+}
+
+PS2.prototype.reset = function()
+{
     /** @type {boolean} */
     this.enable_mouse_stream = false;
 
@@ -101,42 +146,13 @@ function PS2(cpu, bus)
     /** @type {boolean} */
     this.next_byte_is_aux = false;
 
-    this.bus.register("keyboard-code", function(code)
-    {
-        this.kbd_send_code(code);
-    }, this);
-
-    this.bus.register("mouse-click", function(data)
-    {
-        this.mouse_send_click(data[0], data[1], data[2]);
-    }, this);
-
-    this.bus.register("mouse-delta", function(data)
-    {
-        this.mouse_send_delta(data[0], data[1]);
-    }, this);
-
-    this.bus.register("mouse-wheel", function(data)
-    {
-        this.wheel_movement -= data[0];
-        this.wheel_movement -= data[1] * 2; // X Wheel Movement
-        this.wheel_movement = Math.min(7, Math.max(-8, this.wheel_movement));
-        this.send_mouse_packet(0, 0);
-    }, this);
-
     this.command_register = 1 | 4;
     // TODO: What should be the initial value?
     this.controller_output_port = 0;
     this.read_output_register = false;
     this.read_command_register = false;
     this.read_controller_output_port = false;
-
-    cpu.io.register_read(0x60, this, this.port60_read);
-    cpu.io.register_read(0x64, this, this.port64_read);
-
-    cpu.io.register_write(0x60, this, this.port60_write);
-    cpu.io.register_write(0x64, this, this.port64_write);
-}
+};
 
 PS2.prototype.get_state = function()
 {
@@ -213,6 +229,11 @@ PS2.prototype.set_state = function(state)
     this.bus.send("mouse-enable", this.use_mouse);
 };
 
+PS2.prototype.mouse_stream_active = function()
+{
+    return this.enable_mouse_stream && !(this.command_register & 0x20);
+};
+
 PS2.prototype.raise_irq = function()
 {
     if(this.next_byte_is_ready)
@@ -286,20 +307,20 @@ PS2.prototype.mouse_send_delta = function(delta_x, delta_y)
 
     // note: delta_x or delta_y can be floating point numbers
 
-    var factor = this.resolution * this.sample_rate / 80;
+    //const factor = this.resolution * this.sample_rate / 80;
+    const factor = 1;
 
     this.mouse_delta_x += delta_x * factor;
     this.mouse_delta_y += delta_y * factor;
 
-    if(this.enable_mouse_stream)
+    if(this.mouse_stream_active())
     {
         var change_x = this.mouse_delta_x | 0,
             change_y = this.mouse_delta_y | 0;
 
         if(change_x || change_y)
         {
-            var now = Date.now();
-
+            //var now = Date.now();
             //if(now - this.last_mouse_packet < 1000 / this.sample_rate)
             //{
             //    // TODO: set timeout
@@ -323,7 +344,7 @@ PS2.prototype.mouse_send_click = function(left, middle, right)
 
     this.mouse_clicks = left | right << 1 | middle << 2;
 
-    if(this.enable_mouse_stream)
+    if(this.mouse_stream_active())
     {
         this.send_mouse_packet(0, 0);
     }
@@ -567,7 +588,7 @@ PS2.prototype.port60_write = function(write_byte)
         }
         else
         {
-            this.kbd_buffer.push(2);
+            this.kbd_buffer.push(1);
         }
     }
     else if(this.next_read_rate)
@@ -705,7 +726,7 @@ PS2.prototype.port60_write = function(write_byte)
         case 0xF2:
             // identify
             this.kbd_buffer.push(0xAB);
-            this.kbd_buffer.push(83);
+            this.kbd_buffer.push(0x83);
             break;
         case 0xF3:
             //  Set typematic rate and delay
@@ -753,6 +774,13 @@ PS2.prototype.port64_write = function(write_byte)
         break;
     case 0x60:
         this.read_command_register = true;
+        break;
+    case 0xD0:
+        // read controller output port
+        this.kbd_buffer.clear();
+        this.mouse_buffer.clear();
+        this.kbd_buffer.push(this.controller_output_port);
+        this.kbd_irq();
         break;
     case 0xD1:
         this.read_controller_output_port = true;

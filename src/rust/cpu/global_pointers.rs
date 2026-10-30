@@ -1,8 +1,8 @@
 #![allow(non_upper_case_globals)]
 
-use cpu::cpu::reg128;
-use softfloat::F80;
-use state_flags::CachedStateFlags;
+use crate::cpu::cpu::reg128;
+use crate::softfloat::F80;
+use crate::state_flags::CachedStateFlags;
 
 pub const reg8: *mut u8 = 64 as *mut u8;
 pub const reg16: *mut u16 = 64 as *mut u16;
@@ -15,7 +15,7 @@ pub const state_flags: *mut CachedStateFlags = 108 as *mut CachedStateFlags;
 pub const last_result: *mut i32 = 112 as *mut i32;
 pub const flags: *mut i32 = 120 as *mut i32;
 
-pub const page_fault: *mut bool = 540 as *mut bool;
+pub const segment_access_bytes: *mut u8 = 512 as *mut u8; // TODO: reorder below segment_limits
 
 pub const apic_enabled: *mut bool = 548 as *mut bool;
 pub const acpi_enabled: *mut bool = 552 as *mut bool;
@@ -47,6 +47,7 @@ pub const svga_dirty_bitmap_max_offset: *mut u32 = 720 as *mut u32;
 pub const segment_is_null: *mut bool = 724 as *mut bool;
 pub const segment_offsets: *mut i32 = 736 as *mut i32;
 pub const segment_limits: *mut u32 = 768 as *mut u32;
+
 pub const protected_mode: *mut bool = 800 as *mut bool;
 pub const is_32: *mut bool = 804 as *mut bool;
 pub const stack_size_32: *mut bool = 808 as *mut bool;
@@ -72,6 +73,8 @@ pub const tss_size_32: *mut bool = 1128 as *mut bool;
 pub const sse_scratch_register: *mut reg128 = 1136 as *mut reg128;
 
 pub const fpu_st: *mut F80 = 1152 as *mut F80;
+pub const efer: *mut u64 = 1280 as *mut u64;
+pub const pat: *mut u64 = 1288 as *mut u64;
 
 pub fn get_reg32_offset(r: u32) -> u32 {
     dbg_assert!(r < 8);

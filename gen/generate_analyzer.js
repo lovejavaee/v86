@@ -1,16 +1,19 @@
 #!/usr/bin/env node
-"use strict";
 
-const assert = require("assert").strict;
-const fs = require("fs");
-const path = require("path");
-const x86_table = require("./x86_table");
-const rust_ast = require("./rust_ast");
-const { hex, mkdirpSync, get_switch_value, get_switch_exist, finalize_table_rust } = require("./util");
 
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import url from "node:url";
+
+import x86_table from "./x86_table.js";
+import * as rust_ast from "./rust_ast.js";
+import { hex, get_switch_value, get_switch_exist, finalize_table_rust } from "./util.js";
+
+const __dirname = url.fileURLToPath(new URL(".", import.meta.url));
 const OUT_DIR = path.join(__dirname, "..", "src/rust/gen/");
 
-mkdirpSync(OUT_DIR);
+fs.mkdirSync(OUT_DIR, { recursive: true });
 
 const table_arg = get_switch_value("--table");
 const gen_all = get_switch_exist("--all");
@@ -98,19 +101,19 @@ function gen_instruction_body(encodings, size)
     const encoding = encodings[0];
 
     let has_66 = [];
-    let has_F2 = [];
-    let has_F3 = [];
+    let has_f2 = [];
+    let has_f3 = [];
     let no_prefix = [];
 
     for(let e of encodings)
     {
         if((e.opcode >>> 16) === 0x66) has_66.push(e);
-        else if((e.opcode >>> 8 & 0xFF) === 0xF2 || (e.opcode >>> 16) === 0xF2) has_F2.push(e);
-        else if((e.opcode >>> 8 & 0xFF) === 0xF3 || (e.opcode >>> 16) === 0xF3) has_F3.push(e);
+        else if((e.opcode >>> 8 & 0xFF) === 0xF2 || (e.opcode >>> 16) === 0xF2) has_f2.push(e);
+        else if((e.opcode >>> 8 & 0xFF) === 0xF3 || (e.opcode >>> 16) === 0xF3) has_f3.push(e);
         else no_prefix.push(e);
     }
 
-    if(has_F2.length || has_F3.length)
+    if(has_f2.length || has_f3.length)
     {
         assert((encoding.opcode & 0xFF0000) === 0 || (encoding.opcode & 0xFF00) === 0x0F00);
     }
@@ -127,21 +130,21 @@ function gen_instruction_body(encodings, size)
         code.push("let modrm_byte = cpu.read_imm8();");
     }
 
-    if(has_66.length || has_F2.length || has_F3.length)
+    if(has_66.length || has_f2.length || has_f3.length)
     {
         const if_blocks = [];
 
         if(has_66.length) {
             const body = gen_instruction_body_after_prefix(has_66, size);
-            if_blocks.push({ condition: "cpu.prefixes & ::prefix::PREFIX_66 != 0", body, });
+            if_blocks.push({ condition: "cpu.prefixes & prefix::PREFIX_66 != 0", body, });
         }
-        if(has_F2.length) {
-            const body = gen_instruction_body_after_prefix(has_F2, size);
-            if_blocks.push({ condition: "cpu.prefixes & ::prefix::PREFIX_F2 != 0", body, });
+        if(has_f2.length) {
+            const body = gen_instruction_body_after_prefix(has_f2, size);
+            if_blocks.push({ condition: "cpu.prefixes & prefix::PREFIX_F2 != 0", body, });
         }
-        if(has_F3.length) {
-            const body = gen_instruction_body_after_prefix(has_F3, size);
-            if_blocks.push({ condition: "cpu.prefixes & ::prefix::PREFIX_F3 != 0", body, });
+        if(has_f3.length) {
+            const body = gen_instruction_body_after_prefix(has_f3, size);
+            if_blocks.push({ condition: "cpu.prefixes & prefix::PREFIX_F3 != 0", body, });
         }
 
         const else_block = {
@@ -199,7 +202,7 @@ function gen_instruction_body_after_prefix(encodings, size)
 
                 default_case: {
                     body: [
-                        "analysis.ty = ::analysis::AnalysisType::BlockBoundary;",
+                        "analysis.ty = analysis::AnalysisType::BlockBoundary;",
                         "analysis.no_next_instruction = true;",
                     ],
                 }
@@ -218,14 +221,14 @@ function gen_instruction_body_after_fixed_g(encoding, size)
     const instruction_postfix = [];
 
     if(encoding.custom_sti) {
-        instruction_postfix.push("analysis.ty = ::analysis::AnalysisType::STI;");
+        instruction_postfix.push("analysis.ty = analysis::AnalysisType::STI;");
     }
     else if(
         encoding.block_boundary &&
         // jump_offset_imm: Is a block boundary, but gets a different type (Jump) below
         !encoding.jump_offset_imm || (!encoding.custom && encoding.e))
     {
-        instruction_postfix.push("analysis.ty = ::analysis::AnalysisType::BlockBoundary;");
+        instruction_postfix.push("analysis.ty = analysis::AnalysisType::BlockBoundary;");
     }
 
     if(encoding.no_next_instruction)
@@ -239,7 +242,7 @@ function gen_instruction_body_after_fixed_g(encoding, size)
 
     if(encoding.prefix)
     {
-        const instruction_name = "::analysis::" + make_instruction_name(encoding, size) + "_analyze";
+        const instruction_name = "analysis::" + make_instruction_name(encoding, size) + "_analyze";
         const args = ["cpu", "analysis"];
 
         assert(!imm_read);
@@ -259,14 +262,14 @@ function gen_instruction_body_after_fixed_g(encoding, size)
         if(encoding.mem_ud)
         {
             mem_postfix.push(
-                "analysis.ty = ::analysis::AnalysisType::BlockBoundary;"
+                "analysis.ty = analysis::AnalysisType::BlockBoundary;"
             );
         }
 
         if(encoding.reg_ud)
         {
             reg_postfix.push(
-                "analysis.ty = ::analysis::AnalysisType::BlockBoundary;"
+                "analysis.ty = analysis::AnalysisType::BlockBoundary;"
             );
         }
 
@@ -287,7 +290,7 @@ function gen_instruction_body_after_fixed_g(encoding, size)
                     if_blocks: [{
                         condition: "modrm_byte < 0xC0",
                         body: [].concat(
-                            gen_call("::analysis::modrm_analyze", ["cpu", "modrm_byte"]),
+                            gen_call("analysis::modrm_analyze", ["cpu", "modrm_byte"]),
                             mem_postfix,
                         ),
                     }],
@@ -320,11 +323,11 @@ function gen_instruction_body_after_fixed_g(encoding, size)
                         (encoding.opcode & ~0x3) === 0xE0
                     );
                     const condition_index = encoding.opcode & 0xFF;
-                    body.push(`analysis.ty = ::analysis::AnalysisType::Jump { offset: jump_offset as i32, condition: Some(0x${hex(condition_index, 2)}), is_32: cpu.osize_32() };`);
+                    body.push(`analysis.ty = analysis::AnalysisType::Jump { offset: jump_offset as i32, condition: Some(0x${hex(condition_index, 2)}), is_32: cpu.osize_32() };`);
                 }
                 else
                 {
-                    body.push(`analysis.ty = ::analysis::AnalysisType::Jump { offset: jump_offset as i32, condition: None, is_32: cpu.osize_32() };`);
+                    body.push(`analysis.ty = analysis::AnalysisType::Jump { offset: jump_offset as i32, condition: None, is_32: cpu.osize_32() };`);
                 }
             }
             else
@@ -415,7 +418,10 @@ function gen_table()
     {
         const code = [
             "#[cfg_attr(rustfmt, rustfmt_skip)]",
-            "pub fn analyzer(opcode: u32, cpu: &mut ::cpu_context::CpuContext, analysis: &mut ::analysis::Analysis) {",
+            "use crate::analysis;",
+            "use crate::prefix;",
+            "use crate::cpu_context;",
+            "pub fn analyzer(opcode: u32, cpu: &mut cpu_context::CpuContext, analysis: &mut analysis::Analysis) {",
             table,
             "}",
         ];
@@ -472,7 +478,10 @@ function gen_table()
         const code = [
             "#![allow(unused)]",
             "#[cfg_attr(rustfmt, rustfmt_skip)]",
-            "pub fn analyzer(opcode: u32, cpu: &mut ::cpu_context::CpuContext, analysis: &mut ::analysis::Analysis) {",
+            "use crate::analysis;",
+            "use crate::prefix;",
+            "use crate::cpu_context;",
+            "pub fn analyzer(opcode: u32, cpu: &mut cpu_context::CpuContext, analysis: &mut analysis::Analysis) {",
             table0f,
             "}"
         ];

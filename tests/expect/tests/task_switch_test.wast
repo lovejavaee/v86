@@ -21,11 +21,11 @@
   (type $t19 (func (param i32 i64 i32) (result i32)))
   (type $t20 (func (param i32 i64 i64 i32) (result i32)))
   (import "e" "task_switch_test_jit" (func $e.task_switch_test_jit (type $t1)))
-  (import "e" "fpu_get_sti" (func $e.fpu_get_sti (type $t2)))
+  (import "e" "fpu_get_sti_jit" (func $e.fpu_get_sti_jit (type $t2)))
   (import "e" "fpu_fadd" (func $e.fpu_fadd (type $t18)))
   (import "e" "fpu_pop" (func $e.fpu_pop (type $t0)))
   (import "e" "instr_F4" (func $e.instr_F4 (type $t0)))
-  (import "e" "trigger_fault_end_jit" (func $e.trigger_fault_end_jit (type $t0)))
+  (import "e" "exit_jit" (func $e.exit_jit (type $t0)))
   (import "e" "m" (memory {normalised output}))
   (func $f (export "f") (type $t1) (param $p0 i32)
     (local $l0 i32) (local $l1 i32) (local $l2 i32) (local $l3 i32) (local $l4 i32) (local $l5 i32) (local $l6 i32) (local $l7 i32) (local $l8 i32)
@@ -76,10 +76,10 @@
                 (i32.const 12))
               (then
                 (call $e.task_switch_test_jit
-                  (i32.const 4096))
+                  (i32.const 0))
                 (br $B1)))
             (i32.const 1)
-            (call $e.fpu_get_sti
+            (call $e.fpu_get_sti_jit
               (i32.const 1136)
               (i32.const 1))
             (i64.load
@@ -179,7 +179,7 @@
       (i32.store
         (i32.const 92)
         (get_local $l7))
-      (call $e.trigger_fault_end_jit)
+      (call $e.exit_jit)
       (i32.store
         (i32.const 664)
         (i32.add

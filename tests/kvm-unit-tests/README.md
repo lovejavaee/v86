@@ -13,13 +13,16 @@ make -C ../../build/libv86.js
 ./run.js x86/ioapic.flat
 ./run.js x86/apic.flat
 ./run.js x86/pae.flat
+./run.mjs x86/nx.flat
 ```
+
+The NX test exercises PAE execute permissions, page-fault error codes and priority,
+PDPTE reloads, and executable/NX aliases of the same physical page.
 
 Tests can also be run in browser by going to `?profile=test-$name` (for
 example, `?profile=test-realmode`).
 
-Most tests require you to set `ENABLE_ACPI` to `true` in `src/config.js`
-(currently not the default).
+Most tests require you to set `acpi: true` in the v86 constructor.
 
 
 # Welcome to kvm-unit-tests

@@ -1,17 +1,21 @@
-"use strict";
+import { v86 } from "./main.js";
+import { LOG_PIT } from "./const.js";
+import { h } from "./lib.js";
+import { dbg_log } from "./log.js";
 
-/**
- * @const
- * In kHz
- */
-var OSCILLATOR_FREQ = 1193.1816666; // 1.193182 MHz
+// For Types Only
+import { CPU } from "./cpu.js";
+
+
+// In kHz
+export const OSCILLATOR_FREQ = 1193.1816666; // 1.193182 MHz
 
 /**
  * @constructor
  *
  * Programmable Interval Timer
  */
-function PIT(cpu, bus)
+export function PIT(cpu, bus)
 {
     /** @const @type {CPU} */
     this.cpu = cpu;
@@ -109,8 +113,11 @@ PIT.prototype.timer = function(now, no_irq)
     {
         if(this.counter_enabled[0] && this.did_rollover(0, now))
         {
+            const diff = now - this.counter_start_time[0];
+            const diff_in_ticks = Math.floor(diff * OSCILLATOR_FREQ);
+
             this.counter_start_value[0] = this.get_counter_value(0, now);
-            this.counter_start_time[0] = now;
+            this.counter_start_time[0] = diff < 0 ? now : this.counter_start_time[0] + diff_in_ticks / OSCILLATOR_FREQ;
 
             dbg_log("pit interrupt. new value: " + this.counter_start_value[0], LOG_PIT);
 
@@ -304,13 +311,13 @@ PIT.prototype.port43_write = function(reg_byte)
 
     if(read_mode === 1)
     {
-        // msb
-        this.counter_next_low[i] = 0;
+        // lsb
+        this.counter_next_low[i] = 1;
     }
     else if(read_mode === 2)
     {
-        // lsb
-        this.counter_next_low[i] = 1;
+        // msb
+        this.counter_next_low[i] = 0;
     }
     else
     {

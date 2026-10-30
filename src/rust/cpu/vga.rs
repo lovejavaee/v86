@@ -1,10 +1,15 @@
 #![allow(non_upper_case_globals)]
+#![allow(static_mut_refs)]
 
-use cpu::global_pointers;
-use cpu::memory;
+// Safety of allow(static_mut_refs) in this file:
+// These following two globals are not passed anywhere, only built-in function are called on them
+static mut dirty_bitmap: Vec<u64> = Vec::new();
+static mut dest_buffer: Vec<u32> = Vec::new();
 
-pub static mut dirty_bitmap: Vec<u64> = Vec::new();
-pub static mut dest_buffer: Vec<u32> = Vec::new();
+use crate::cpu::global_pointers;
+use crate::cpu::memory;
+
+use std::ptr;
 
 #[no_mangle]
 pub unsafe fn svga_allocate_dest_buffer(size: u32) -> u32 {
@@ -12,7 +17,8 @@ pub unsafe fn svga_allocate_dest_buffer(size: u32) -> u32 {
     dest_buffer.as_mut_ptr() as u32
 }
 
-#[no_mangle]
+pub unsafe fn set_dirty_bitmap_size(size: u32) { dirty_bitmap.resize(size as usize, 0); }
+
 pub unsafe fn mark_dirty(addr: u32) {
     let page = (addr - memory::VGA_LFB_ADDRESS) >> 12;
     dbg_assert!(((page >> 6) as usize) < dirty_bitmap.len());
@@ -30,7 +36,7 @@ fn iter_dirty_pages(f: &dyn Fn(isize)) {
     let mut min_off = u32::MAX;
     let mut max_off = u32::MIN;
 
-    for (i, &word) in unsafe { &dirty_bitmap }.iter().enumerate() {
+    for (i, &word) in unsafe { dirty_bitmap.iter().enumerate() } {
         if word == 0 {
             continue;
         }
@@ -94,7 +100,7 @@ pub unsafe fn svga_fill_pixel_buffer(bpp: u32, svga_dest_offset: u32) {
                 isize::min(4096 / 3 + 1, dest_buffer.len() as isize - dest_offset)
             };
             for i in 0..end {
-                let dword = *(src.offset(3 * i) as *const u32);
+                let dword = ptr::read_unaligned(src.offset(3 * i) as *const u32);
                 let dword = if debug_bounds && (i == 0 || i == end - 1) { 0xFFFFFF } else { dword };
                 dbg_assert!(dest_offset + i < dest_buffer.len() as isize);
                 *dest.offset(i) = dword << 16 | dword >> 16 & 0xFF | dword & 0xFF00 | 0xFF00_0000;

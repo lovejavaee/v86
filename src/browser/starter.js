@@ -1,119 +1,75 @@
-"use strict";
+import { v86 } from "../main.js";
+import { LOG_CPU, WASM_TABLE_OFFSET, WASM_TABLE_SIZE } from "../const.js";
+import { get_rand_int, load_file, read_sized_string_from_mem } from "../lib.js";
+import { dbg_assert, dbg_trace, dbg_log, set_log_level } from "../log.js";
+import * as print_stats from "./print_stats.js";
+import { Bus } from "../bus.js";
+import { BOOT_ORDER_FD_FIRST, BOOT_ORDER_HD_FIRST, BOOT_ORDER_CD_FIRST } from "../rtc.js";
+import { EEXIST, ENOENT } from "../../lib/9p.js";
+
+import { SpeakerAdapter } from "./speaker.js";
+import { NetworkAdapter } from "./network.js";
+import { FetchNetworkAdapter } from "./fetch_network.js";
+import { WispNetworkAdapter } from "./wisp_network.js";
+import { KeyboardAdapter } from "./keyboard.js";
+import { MouseAdapter } from "./mouse.js";
+import { ScreenAdapter } from "./screen.js";
+import { DummyScreenAdapter } from "./dummy_screen.js";
+import { ANSIScreenAdapter } from "./ansi_screen.js";
+import { SerialAdapter, VirtioConsoleAdapter, SerialAdapterXtermJS, VirtioConsoleAdapterXtermJS } from "./serial.js";
+import { InBrowserNetworkAdapter } from "./inbrowser_network.js";
+import { Modem } from "./modem.js";
+
+import { MemoryFileStorage, ServerFileStorageWrapper } from "./filestorage.js";
+import { SyncBuffer, buffer_from_object } from "../buffer.js";
+import { FS } from "../../lib/filesystem.js";
 
 /**
  * Constructor for emulator instances.
  *
- * Usage: `var emulator = new V86Starter(options);`
+ * For API usage, see v86.d.ts in the root of this repository.
  *
- * Options can have the following properties (all optional, default in parenthesis):
- *
- * - `memory_size number` (16 * 1024 * 1024) - The memory size in bytes, should
- *   be a power of 2.
- * - `vga_memory_size number` (8 * 1024 * 1024) - VGA memory size in bytes.
- *
- * - `autostart boolean` (false) - If emulation should be started when emulator
- *   is ready.
- *
- * - `disable_keyboard boolean` (false) - If the keyboard should be disabled.
- * - `disable_mouse boolean` (false) - If the mouse should be disabled.
- *
- * - `network_relay_url string` (No network card) - The url of a server running
- *   websockproxy. See [networking.md](networking.md). Setting this will
- *   enable an emulated network card.
- *
- * - `bios Object` (No bios) - Either a url pointing to a bios or an
- *   ArrayBuffer, see below.
- * - `vga_bios Object` (No VGA bios) - VGA bios, see below.
- * - `hda Object` (No hard drive) - First hard disk, see below.
- * - `fda Object` (No floppy disk) - First floppy disk, see below.
- * - `cdrom Object` (No CD) - See below.
- *
- * - `bzimage Object` - A Linux kernel image to boot (only bzimage format), see below.
- * - `initrd Object` - A Linux ramdisk image, see below.
- * - `bzimage_initrd_from_filesystem boolean` - Automatically fetch bzimage and
- *    initrd from the specified `filesystem`.
- *
- * - `initial_state Object` (Normal boot) - An initial state to load, see
- *   [`restore_state`](#restore_statearraybuffer-state) and below.
- *
- * - `filesystem Object` (No 9p filesystem) - A 9p filesystem, see
- *   [filesystem.md](filesystem.md).
- *
- * - `serial_container HTMLTextAreaElement` (No serial terminal) - A textarea
- *   that will receive and send data to the emulated serial terminal.
- *   Alternatively the serial terminal can also be accessed programatically,
- *   see [serial.html](../examples/serial.html).
- *
- * - `screen_container HTMLElement` (No screen) - An HTMLElement. This should
- *   have a certain structure, see [basic.html](../examples/basic.html).
- *
- * ***
- *
- * There are two ways to load images (`bios`, `vga_bios`, `cdrom`, `hda`, ...):
- *
- * - Pass an object that has a url. Optionally, `async: true` and `size:
- *   size_in_bytes` can be added to the object, so that sectors of the image
- *   are loaded on demand instead of being loaded before boot (slower, but
- *   strongly recommended for big files). In that case, the `Range: bytes=...`
- *   header must be supported on the server.
- *
- *   ```javascript
- *   // download file before boot
- *   bios: {
- *       url: "bios/seabios.bin"
- *   }
- *   // download file sectors as requested, size is required
- *   hda: {
- *       url: "disk/linux.iso",
- *       async: true,
- *       size: 16 * 1024 * 1024
- *   }
- *   ```
- *
- * - Pass an `ArrayBuffer` or `File` object as `buffer` property.
- *
- *   ```javascript
- *   // use <input type=file>
- *   bios: {
- *       buffer: document.all.hd_image.files[0]
- *   }
- *   // start with empty hard drive
- *   hda: {
- *       buffer: new ArrayBuffer(16 * 1024 * 1024)
- *   }
- *   ```
- *
- * ***
- *
- * @param {Object} options Options to initialize the emulator with.
+ * @param {{
+      disable_mouse: (boolean|undefined),
+      disable_keyboard: (boolean|undefined),
+      wasm_fn: (Function|undefined),
+      screen: ({
+          scale: (number|undefined),
+      } | undefined),
+    }} options
  * @constructor
  */
-function V86Starter(options)
+export function V86(options)
 {
+    if(typeof options.log_level === "number")
+    {
+        // XXX: Shared between all emulator instances
+        set_log_level(options.log_level);
+    }
+
     //var worker = new Worker("src/browser/worker.js");
     //var adapter_bus = this.bus = WorkerBus.init(worker);
 
     this.cpu_is_running = false;
+    this.cpu_exception_hook = function(n) {};
 
     const bus = Bus.create();
-    const adapter_bus = this.bus = bus[0];
+    this.bus = bus[0];
     this.emulator_bus = bus[1];
 
     var cpu;
     var wasm_memory;
 
-    const wasm_table = new WebAssembly.Table({ element: "anyfunc", "initial": WASM_TABLE_SIZE + WASM_TABLE_OFFSET });
+    const wasm_table = new WebAssembly.Table({ element: "anyfunc", initial: WASM_TABLE_SIZE + WASM_TABLE_OFFSET });
 
     const wasm_shared_funcs = {
-        "cpu_exception_hook": (n) => {
-            return this["cpu_exception_hook"] && this["cpu_exception_hook"](n);
-        },
-        "hlt_op": function() { return cpu.hlt_op(); },
+        "cpu_exception_hook": n => this.cpu_exception_hook(n),
+        "run_hardware_timers": function(a, t) { return cpu.run_hardware_timers(a, t); },
+        "cpu_event_halt": () => { this.emulator_bus.send("cpu-event-halt"); },
         "abort": function() { dbg_assert(false); },
         "microtick": v86.microtick,
-        "get_rand_int": function() { return v86util.get_rand_int(); },
-
-        "pic_acknowledge": function() { cpu.pic_acknowledge(); },
+        "get_rand_int": function() { return get_rand_int(); },
+        "stop_idling": function() { return cpu.stop_idling(); },
 
         "io_port_read8": function(addr) { return cpu.io.port_read8(addr); },
         "io_port_read16": function(addr) { return cpu.io.port_read16(addr); },
@@ -123,7 +79,6 @@ function V86Starter(options)
         "io_port_write32": function(addr, value) { cpu.io.port_write32(addr, value); },
 
         "mmap_read8": function(addr) { return cpu.mmap_read8(addr); },
-        "mmap_read16": function(addr) { return cpu.mmap_read16(addr); },
         "mmap_read32": function(addr) { return cpu.mmap_read32(addr); },
         "mmap_write8": function(addr, value) { cpu.mmap_write8(addr, value); },
         "mmap_write16": function(addr, value) { cpu.mmap_write16(addr, value); },
@@ -134,11 +89,11 @@ function V86Starter(options)
         },
 
         "log_from_wasm": function(offset, len) {
-            const str = v86util.read_sized_string_from_mem(wasm_memory, offset, len);
+            const str = read_sized_string_from_mem(wasm_memory, offset, len);
             dbg_log(str, LOG_CPU);
         },
         "console_log_from_wasm": function(offset, len) {
-            const str = v86util.read_sized_string_from_mem(wasm_memory, offset, len);
+            const str = read_sized_string_from_mem(wasm_memory, offset, len);
             console.error(str);
         },
         "dbg_trace_from_wasm": function() {
@@ -154,22 +109,22 @@ function V86Starter(options)
         "__indirect_function_table": wasm_table,
     };
 
-    let wasm_fn = options["wasm_fn"];
+    let wasm_fn = options.wasm_fn;
 
     if(!wasm_fn)
     {
         wasm_fn = env =>
         {
+            /* global __dirname */
+
             return new Promise(resolve => {
                 let v86_bin = DEBUG ? "v86-debug.wasm" : "v86.wasm";
                 let v86_bin_fallback = "v86-fallback.wasm";
 
-                if(options["wasm_path"])
+                if(options.wasm_path)
                 {
-                    v86_bin = options["wasm_path"];
-                    const slash = v86_bin.lastIndexOf("/");
-                    const dir = slash === -1 ? "" : v86_bin.substr(0, slash);
-                    v86_bin_fallback = dir + "/" + v86_bin_fallback;
+                    v86_bin = options.wasm_path;
+                    v86_bin_fallback = v86_bin.replace("v86.wasm", "v86-fallback.wasm");
                 }
                 else if(typeof window === "undefined" && typeof __dirname === "string")
                 {
@@ -182,19 +137,21 @@ function V86Starter(options)
                     v86_bin_fallback = "build/" + v86_bin_fallback;
                 }
 
-                v86util.load_file(v86_bin, {
+                load_file(v86_bin, {
                     done: async bytes =>
                     {
                         try
                         {
                             const { instance } = await WebAssembly.instantiate(bytes, env);
+                            this.wasm_source = bytes;
                             resolve(instance.exports);
                         }
                         catch(err)
                         {
-                            v86util.load_file(v86_bin_fallback, {
+                            load_file(v86_bin_fallback, {
                                     done: async bytes => {
                                         const { instance } = await WebAssembly.instantiate(bytes, env);
+                                        this.wasm_source = bytes;
                                         resolve(instance.exports);
                                     },
                                 });
@@ -227,90 +184,184 @@ function V86Starter(options)
 
             this.continue_init(emulator, options);
         });
+
+    this.zstd_worker = null;
+    this.zstd_worker_request_id = 0;
 }
 
-V86Starter.prototype.continue_init = async function(emulator, options)
+V86.prototype.continue_init = async function(emulator, options)
 {
     this.bus.register("emulator-stopped", function()
     {
         this.cpu_is_running = false;
+        this.screen_adapter.pause();
     }, this);
 
     this.bus.register("emulator-started", function()
     {
         this.cpu_is_running = true;
+        this.screen_adapter.continue();
     }, this);
 
     var settings = {};
 
-    this.disk_images = {
-        "fda": undefined,
-        "fdb": undefined,
-        "hda": undefined,
-        "hdb": undefined,
-        "cdrom": undefined,
-    };
+    const boot_order =
+        options.boot_order ? options.boot_order :
+        options.fda ? BOOT_ORDER_FD_FIRST :
+        options.hda ? BOOT_ORDER_HD_FIRST : BOOT_ORDER_CD_FIRST;
 
-    settings.acpi = options["acpi"];
+    if(options.modem)
+    {
+        settings.modem = options.modem;
+        switch(options.modem.uart)
+        {
+            case 1:
+                options.uart1 = true;
+                break;
+            case 2:
+                options.uart2 = true;
+                break;
+            case 3:
+                options.uart3 = true;
+                break;
+        }
+    }
+
+    settings.acpi = options.acpi;
+    settings.disable_jit = options.disable_jit;
     settings.load_devices = true;
-    settings.log_level = options["log_level"];
-    settings.memory_size = options["memory_size"] || 64 * 1024 * 1024;
-    settings.vga_memory_size = options["vga_memory_size"] || 8 * 1024 * 1024;
-    settings.boot_order = options["boot_order"] || 0x213;
-    settings.fastboot = options["fastboot"] || false;
+    settings.memory_size = options.memory_size || 64 * 1024 * 1024;
+    settings.vga_memory_size = options.vga_memory_size || 8 * 1024 * 1024;
+    settings.boot_order = boot_order;
+    settings.fastboot = options.fastboot || false;
+    settings.bootmenu = options.bootmenu || false;
     settings.fda = undefined;
     settings.fdb = undefined;
-    settings.uart1 = options["uart1"];
-    settings.uart2 = options["uart2"];
-    settings.uart3 = options["uart3"];
-    settings.cmdline = options["cmdline"];
-    settings.preserve_mac_from_state_image = options["preserve_mac_from_state_image"];
-    settings.mac_address_translation = options["mac_address_translation"];
-    settings.cpuid_level = options["cpuid_level"];
+    settings.uart1 = options.uart1;
+    settings.uart2 = options.uart2;
+    settings.uart3 = options.uart3;
+    settings.parallel1 = options.parallel1;
+    settings.cmdline = options.cmdline;
+    settings.preserve_mac_from_state_image = options.preserve_mac_from_state_image;
+    settings.mac_address_translation = options.mac_address_translation;
+    settings.cpuid_level = options.cpuid_level;
+    settings.virtio_balloon = options.virtio_balloon;
+    settings.virtio_console = !!options.virtio_console;
 
-    if(options["network_adapter"])
+    const relay_url = options.network_relay_url || options.net_device && options.net_device.relay_url;
+    if(relay_url)
     {
-        this.network_adapter = options["network_adapter"](this.bus);
-    }
-    else if(options["network_relay_url"])
-    {
-        this.network_adapter = new NetworkAdapter(options["network_relay_url"], this.bus);
+        // TODO: remove bus, use direct calls instead
+        if(relay_url === "fetch")
+        {
+            this.network_adapter = new FetchNetworkAdapter(this.bus, options.net_device);
+        }
+        else if(relay_url === "inbrowser")
+        {
+            // NOTE: experimental, will change when usage of options.net_device gets refactored in favour of emulator.bus
+            this.network_adapter = new InBrowserNetworkAdapter(this.bus, options.net_device);
+        }
+        else if(relay_url.startsWith("wisp://") || relay_url.startsWith("wisps://"))
+        {
+            this.network_adapter = new WispNetworkAdapter(relay_url, this.bus, options.net_device);
+        }
+        else
+        {
+            this.network_adapter = new NetworkAdapter(relay_url, this.bus);
+        }
     }
 
     // Enable unconditionally, so that state images don't miss hardware
     // TODO: Should be properly fixed in restore_state
-    settings.enable_ne2k = true;
+    settings.net_device = Object.assign({ type: "ne2k" }, options.net_device);
 
-    if(!options["disable_keyboard"])
+    const screen_options = options.screen || {};
+    if(options.screen_container)
+    {
+        screen_options.container = options.screen_container;
+    }
+
+    if(!options.disable_keyboard)
     {
         this.keyboard_adapter = new KeyboardAdapter(this.bus);
     }
-    if(!options["disable_mouse"])
+    if(!options.disable_mouse)
     {
-        this.mouse_adapter = new MouseAdapter(this.bus, options["screen_container"]);
+        this.mouse_adapter = new MouseAdapter(this.bus, screen_options.container);
     }
 
-    if(options["screen_container"])
+    // Pointer lock is not needed while the guest uses absolute pointer
+    // positions (the guest cursor follows the host cursor), so release it
+    // when the guest driver enables absolute positioning
+    this.absolute_pointer_enabled = false;
+    this.bus.register("vmware-absolute-mouse", function(enabled)
     {
-        this.screen_adapter = new ScreenAdapter(options["screen_container"], this.bus);
+        if(enabled && !this.absolute_pointer_enabled &&
+            typeof document !== "undefined" && document.pointerLockElement)
+        {
+            document.exitPointerLock();
+        }
+        this.absolute_pointer_enabled = enabled;
+    }, this);
+
+    if(screen_options.container)
+    {
+        this.screen_adapter = new ScreenAdapter(screen_options, () => this.v86.cpu.devices.vga && this.v86.cpu.devices.vga.screen_fill_buffer());
     }
-    else if(options["screen_dummy"])
+    else if(screen_options.ansi)
     {
-        this.screen_adapter = new DummyScreenAdapter(this.bus);
+        this.screen_adapter = new ANSIScreenAdapter(screen_options);
+    }
+    else
+    {
+        this.screen_adapter = new DummyScreenAdapter(screen_options);
+    }
+    settings.screen = this.screen_adapter;
+    settings.screen_options = screen_options;
+
+    settings.serial_console = options.serial_console || { type: "none" };
+
+    // NOTE: serial_container_xtermjs and serial_container are deprecated
+    if(options.serial_container_xtermjs)
+    {
+        settings.serial_console.type = "xtermjs";
+        settings.serial_console.container = options.serial_container_xtermjs;
+    }
+    else if(options.serial_container)
+    {
+        settings.serial_console.type = "textarea";
+        settings.serial_console.container = options.serial_container;
     }
 
-    if(options["serial_container"])
+    if(settings.serial_console?.type === "xtermjs")
     {
-        this.serial_adapter = new SerialAdapter(options["serial_container"], this.bus);
+        const xterm_lib = settings.serial_console.xterm_lib || window["Terminal"];
+        this.serial_adapter = new SerialAdapterXtermJS(settings.serial_console.container, this.bus, xterm_lib);
+    }
+    else if(settings.serial_console?.type === "textarea")
+    {
+        this.serial_adapter = new SerialAdapter(settings.serial_console.container, this.bus);
         //this.recording_adapter = new SerialRecordingAdapter(this.bus);
     }
 
-    if(options["serial_container_xtermjs"])
+    const virtio_console_settings = (options.virtio_console && typeof options.virtio_console === "boolean") ? { type: "none" } : options.virtio_console;
+
+    if(virtio_console_settings?.type === "xtermjs")
     {
-        this.serial_adapter = new SerialAdapterXtermJS(options["serial_container_xtermjs"], this.bus);
+        const xterm_lib = virtio_console_settings.xterm_lib || window["Terminal"];
+        this.virtio_console_adapter = new VirtioConsoleAdapterXtermJS(virtio_console_settings.container, this.bus, xterm_lib);
+    }
+    else if(virtio_console_settings?.type === "textarea")
+    {
+        this.virtio_console_adapter = new VirtioConsoleAdapter(virtio_console_settings.container, this.bus);
     }
 
-    if(!options["disable_speaker"])
+    if(settings.modem)
+    {
+        this.modem = new Modem(this.bus, settings.modem);
+    }
+
+    if(!options.disable_speaker)
     {
         this.speaker_adapter = new SpeakerAdapter(this.bus);
     }
@@ -321,29 +372,29 @@ V86Starter.prototype.continue_init = async function(emulator, options)
         switch(name)
         {
             case "hda":
-                settings.hda = this.disk_images["hda"] = buffer;
+                settings.hda = buffer;
                 break;
             case "hdb":
-                settings.hdb = this.disk_images["hdb"] = buffer;
+                settings.hdb = buffer;
                 break;
             case "cdrom":
-                settings.cdrom = this.disk_images["cdrom"] = buffer;
+                settings.cdrom = buffer;
                 break;
             case "fda":
-                settings.fda = this.disk_images["fda"] = buffer;
+                settings.fda = buffer;
                 break;
             case "fdb":
-                settings.fdb = this.disk_images["fdb"] = buffer;
+                settings.fdb = buffer;
                 break;
 
             case "multiboot":
-                settings.multiboot = this.disk_images["multiboot"] = buffer.buffer;
+                settings.multiboot = buffer.buffer;
                 break;
             case "bzimage":
-                settings.bzimage = this.disk_images["bzimage"] = buffer.buffer;
+                settings.bzimage = buffer.buffer;
                 break;
             case "initrd":
-                settings.initrd = this.disk_images["initrd"] = buffer.buffer;
+                settings.initrd = buffer.buffer;
                 break;
 
             case "bios":
@@ -365,7 +416,7 @@ V86Starter.prototype.continue_init = async function(emulator, options)
 
     var files_to_load = [];
 
-    function add_file(name, file)
+    const add_file = (name, file) =>
     {
         if(!file)
         {
@@ -390,107 +441,64 @@ V86Starter.prototype.continue_init = async function(emulator, options)
             file.async = false;
         }
 
-        if(file.buffer instanceof ArrayBuffer)
+        if(name === "fda" || name === "fdb")
         {
-            var buffer = new v86util.SyncBuffer(file.buffer);
+            // small, doesn't make sense loading asynchronously
+            file.async = false;
+        }
+
+        if(file.url && !file.async)
+        {
             files_to_load.push({
                 name: name,
-                loadable: buffer,
+                url: file.url,
+                size: file.size,
             });
-        }
-        else if(typeof File !== "undefined" && file.buffer instanceof File)
-        {
-            // SyncFileBuffer:
-            // - loads the whole disk image into memory, impossible for large files (more than 1GB)
-            // - can later serve get/set operations fast and synchronously
-            // - takes some time for first load, neglectable for small files (up to 100Mb)
-            //
-            // AsyncFileBuffer:
-            // - loads slices of the file asynchronously as requested
-            // - slower get/set
-
-            // Heuristics: If file is larger than or equal to 256M, use AsyncFileBuffer
-            if(file.async === undefined)
-            {
-                file.async = file.buffer.size >= 256 * 1024 * 1024;
-            }
-
-            if(file.async)
-            {
-                var buffer = new v86util.AsyncFileBuffer(file.buffer);
-            }
-            else
-            {
-                var buffer = new v86util.SyncFileBuffer(file.buffer);
-            }
-
-            files_to_load.push({
-                name: name,
-                loadable: buffer,
-            });
-        }
-        else if(file.url)
-        {
-            if(file.async)
-            {
-                let buffer;
-
-                if(file.use_parts)
-                {
-                    buffer = new v86util.AsyncXHRPartfileBuffer(file.url, file.size, file.fixed_chunk_size);
-                }
-                else
-                {
-                    buffer = new v86util.AsyncXHRBuffer(file.url, file.size, file.fixed_chunk_size);
-                }
-
-                files_to_load.push({
-                    name: name,
-                    loadable: buffer,
-                });
-            }
-            else
-            {
-                files_to_load.push({
-                    name: name,
-                    url: file.url,
-                    size: file.size,
-                });
-            }
         }
         else
         {
-            dbg_log("Ignored file: url=" + file.url + " buffer=" + file.buffer);
+            files_to_load.push({
+                name,
+                loadable: buffer_from_object(file, this.zstd_decompress_worker.bind(this)),
+            });
         }
-    }
+    };
 
-    if(options["state"])
+    if(options.state)
     {
         console.warn("Warning: Unknown option 'state'. Did you mean 'initial_state'?");
     }
 
-    var image_names = [
-        "bios", "vga_bios",
-        "cdrom", "hda", "hdb", "fda", "fdb",
-        "initial_state", "multiboot",
-        "bzimage", "initrd",
-    ];
+    add_file("bios", options.bios);
+    add_file("vga_bios", options.vga_bios);
+    add_file("cdrom", options.cdrom);
+    add_file("hda", options.hda);
+    add_file("hdb", options.hdb);
+    add_file("fda", options.fda);
+    add_file("fdb", options.fdb);
+    add_file("initial_state", options.initial_state);
+    add_file("multiboot", options.multiboot);
+    add_file("bzimage", options.bzimage);
+    add_file("initrd", options.initrd);
 
-    for(var i = 0; i < image_names.length; i++)
+    if(options.filesystem && options.filesystem.handle9p)
     {
-        add_file(image_names[i], options[image_names[i]]);
+        settings.handle9p = options.filesystem.handle9p;
     }
-
-    if(options["filesystem"])
+    else if(options.filesystem && options.filesystem.proxy_url)
     {
-        var fs_url = options["filesystem"].basefs;
-        var base_url = options["filesystem"].baseurl;
+        settings.proxy9p = options.filesystem.proxy_url;
+    }
+    else if(options.filesystem)
+    {
+        var fs_url = options.filesystem.basefs;
+        var base_url = options.filesystem.baseurl;
 
         let file_storage = new MemoryFileStorage();
 
         if(base_url)
         {
-            file_storage = new ServerFileStorageWrapper(file_storage, base_url);
+            file_storage = new ServerFileStorageWrapper(file_storage, base_url, this.zstd_decompress.bind(this));
         }
         settings.fs9p = this.fs9p = new FS(file_storage);
 
@@ -540,10 +548,16 @@ V86Starter.prototype.continue_init = async function(emulator, options)
         }
         else
         {
-            v86util.load_file(f.url, {
+            load_file(f.url, {
                 done: function(result)
                 {
-                    put_on_settings.call(this, f.name, f.as_json ? result : new v86util.SyncBuffer(result));
+                    if(f.url.endsWith(".zst") && f.name !== "initial_state")
+                    {
+                        dbg_assert(f.size, "A size must be provided for compressed images");
+                        result = this.zstd_decompress(f.size, new Uint8Array(result));
+                    }
+
+                    put_on_settings.call(this, f.name, f.as_json ? result : new SyncBuffer(result));
                     cont(index + 1);
                 }.bind(this),
                 progress: function progress(e)
@@ -589,66 +603,174 @@ V86Starter.prototype.continue_init = async function(emulator, options)
             if(!settings.initial_state)
             {
                 settings.fs9p.load_from_json(settings.fs9p_json);
+
+                if(options.bzimage_initrd_from_filesystem)
+                {
+                    const { bzimage_path, initrd_path } = this.get_bzimage_initrd_from_filesystem(settings.fs9p);
+
+                    dbg_log("Found bzimage: " + bzimage_path + " and initrd: " + initrd_path);
+
+                    const [initrd, bzimage] = await Promise.all([
+                        settings.fs9p.read_file(initrd_path),
+                        settings.fs9p.read_file(bzimage_path),
+                    ]);
+                    put_on_settings.call(this, "initrd", new SyncBuffer(initrd.buffer));
+                    put_on_settings.call(this, "bzimage", new SyncBuffer(bzimage.buffer));
+                }
             }
             else
             {
                 dbg_log("Filesystem basefs ignored: Overridden by state image");
             }
-
-            if(options["bzimage_initrd_from_filesystem"])
-            {
-                const { bzimage_path, initrd_path } = this.get_bzimage_initrd_from_filesystem(settings.fs9p);
-
-                dbg_log("Found bzimage: " + bzimage_path + " and initrd: " + initrd_path);
-
-                const [initrd, bzimage] = await Promise.all([
-                    settings.fs9p.read_file(initrd_path),
-                    settings.fs9p.read_file(bzimage_path),
-                ]);
-                put_on_settings.call(this, "initrd", new v86util.SyncBuffer(initrd.buffer));
-                put_on_settings.call(this, "bzimage", new v86util.SyncBuffer(bzimage.buffer));
-                finish.call(this);
-            }
-            else
-            {
-                finish.call(this);
-            }
         }
         else
         {
             dbg_assert(
-                !options["bzimage_initrd_from_filesystem"],
+                !options.bzimage_initrd_from_filesystem || settings.initial_state,
                 "bzimage_initrd_from_filesystem: Requires a filesystem");
-            finish.call(this);
         }
 
-        function finish()
+        this.serial_adapter && this.serial_adapter.show && this.serial_adapter.show();
+        this.virtio_console_adapter && this.virtio_console_adapter.show && this.virtio_console_adapter.show();
+
+        if(!settings.initial_state)
         {
-            this.serial_adapter && this.serial_adapter.show && this.serial_adapter.show();
-
-            this.bus.send("cpu-init", settings);
-
-            if(settings.initial_state)
+            // ide needs to read the mbr to calculate the device geometry
+            if(settings.hda)
             {
-                emulator.restore_state(settings.initial_state);
-
-                // The GC can't free settings, since it is referenced from
-                // several closures. This isn't needed anymore, so we delete it
-                // here
-                settings.initial_state = undefined;
+                await new Promise(resolve => settings.hda.get_and_cache(0, 512, resolve));
             }
-
-            if(options["autostart"])
+            if(settings.hdb)
             {
-                this.bus.send("cpu-run");
+                await new Promise(resolve => settings.hdb.get_and_cache(0, 512, resolve));
             }
-
-            this.emulator_bus.send("emulator-loaded");
         }
+
+        this.v86.init(settings);
+
+        this.modem && this.modem.initialize();
+
+        if(settings.initial_state)
+        {
+            emulator.restore_state(settings.initial_state);
+
+            // The GC can't free settings, since it is referenced from
+            // several closures. This isn't needed anymore, so we delete it
+            // here
+            settings.initial_state = undefined;
+        }
+
+        if(options.autostart)
+        {
+            this.v86.run();
+        }
+
+        this.emulator_bus.send("emulator-loaded");
     }
 };
 
-V86Starter.prototype.get_bzimage_initrd_from_filesystem = function(filesystem)
+/**
+ * @param {number} decompressed_size
+ * @param {Uint8Array} src
+ * @return {ArrayBuffer}
+ */
+V86.prototype.zstd_decompress = function(decompressed_size, src)
+{
+    const cpu = this.v86.cpu;
+
+    dbg_assert(!this.zstd_context);
+    this.zstd_context = cpu.zstd_create_ctx(src.length);
+
+    new Uint8Array(cpu.wasm_memory.buffer).set(src, cpu.zstd_get_src_ptr(this.zstd_context));
+
+    const ptr = cpu.zstd_read(this.zstd_context, decompressed_size);
+    const result = cpu.wasm_memory.buffer.slice(ptr, ptr + decompressed_size);
+    cpu.zstd_read_free(ptr, decompressed_size);
+
+    cpu.zstd_free_ctx(this.zstd_context);
+    this.zstd_context = null;
+
+    return result;
+};
+
+/**
+ * @param {number} decompressed_size
+ * @param {Uint8Array} src
+ * @return {Promise<ArrayBuffer>}
+ */
+V86.prototype.zstd_decompress_worker = async function(decompressed_size, src)
+{
+    if(!this.zstd_worker)
+    {
+        function the_worker()
+        {
+            let wasm;
+
+            globalThis.onmessage = function(e)
+            {
+                if(!wasm)
+                {
+                    const env = Object.fromEntries([
+                        "cpu_exception_hook", "run_hardware_timers",
+                        "cpu_event_halt", "microtick", "get_rand_int", "stop_idling",
+                        "io_port_read8", "io_port_read16", "io_port_read32",
+                        "io_port_write8", "io_port_write16", "io_port_write32",
+                        "mmap_read8", "mmap_read32",
+                        "mmap_write8", "mmap_write16", "mmap_write32", "mmap_write64", "mmap_write128",
+                        "codegen_finalize",
+                        "jit_clear_func", "jit_clear_all_funcs",
+                    ].map(f => [f, () => console.error("zstd worker unexpectedly called " + f)]));
+
+                    env["__indirect_function_table"] = new WebAssembly.Table({ element: "anyfunc", initial: 1024 });
+                    env["abort"] = () => { throw new Error("zstd worker aborted"); };
+                    env["log_from_wasm"] = env["console_log_from_wasm"] = (off, len) => {
+                        console.log(read_sized_string_from_mem(wasm.exports.memory.buffer, off, len));
+                    };
+                    env["dbg_trace_from_wasm"] = () => console.trace();
+
+                    wasm = new WebAssembly.Instance(new WebAssembly.Module(e.data), { "env": env });
+                    return;
+                }
+
+                const { src, decompressed_size, id } = e.data;
+                const exports = wasm.exports;
+
+                const zstd_context = exports["zstd_create_ctx"](src.length);
+                new Uint8Array(exports.memory.buffer).set(src, exports["zstd_get_src_ptr"](zstd_context));
+
+                const ptr = exports["zstd_read"](zstd_context, decompressed_size);
+                const result = exports.memory.buffer.slice(ptr, ptr + decompressed_size);
+                exports["zstd_read_free"](ptr, decompressed_size);
+
+                exports["zstd_free_ctx"](zstd_context);
+
+                postMessage({ result, id }, [result]);
+            };
+        }
+
+        const url = URL.createObjectURL(new Blob(["(" + the_worker.toString() + ")()"], { type: "text/javascript" }));
+        this.zstd_worker = new Worker(url);
+        URL.revokeObjectURL(url);
+        this.zstd_worker.postMessage(this.wasm_source, [this.wasm_source]);
+    }
+
+    return new Promise(resolve => {
+        const id = this.zstd_worker_request_id++;
+        const done = async e =>
+        {
+            if(e.data.id === id)
+            {
+                this.zstd_worker.removeEventListener("message", done);
+                dbg_assert(decompressed_size === e.data.result.byteLength);
+                resolve(e.data.result);
+            }
+        };
+        this.zstd_worker.addEventListener("message", done);
+        this.zstd_worker.postMessage({ src, decompressed_size, id }, [src.buffer]);
+    });
+};
+
+V86.prototype.get_bzimage_initrd_from_filesystem = function(filesystem)
 {
     const root = (filesystem.read_dir("/") || []).map(x => "/" + x);
     const boot = (filesystem.read_dir("/boot/") || []).map(x => "/boot/" + x);
@@ -656,7 +778,7 @@ V86Starter.prototype.get_bzimage_initrd_from_filesystem = function(filesystem)
     let initrd_path;
     let bzimage_path;
 
-    for(let f of [].concat(root, boot))
+    for(const f of [].concat(root, boot))
     {
         const old = /old/i.test(f) || /fallback/i.test(f);
         const is_bzimage = /vmlinuz/i.test(f) || /bzimage/i.test(f);
@@ -684,20 +806,17 @@ V86Starter.prototype.get_bzimage_initrd_from_filesystem = function(filesystem)
 };
 
 /**
- * Start emulation. Do nothing if emulator is running already. Can be
- * asynchronous.
- * @export
+ * Start emulation. Do nothing if emulator is running already. Can be asynchronous.
  */
-V86Starter.prototype.run = async function()
+V86.prototype.run = async function()
 {
-    this.bus.send("cpu-run");
+    this.v86.run();
 };
 
 /**
  * Stop emulation. Do nothing if emulator is not running. Can be asynchronous.
- * @export
  */
-V86Starter.prototype.stop = async function()
+V86.prototype.stop = async function()
 {
     if(!this.cpu_is_running)
     {
@@ -710,15 +829,14 @@ V86Starter.prototype.stop = async function()
             resolve();
         };
         this.add_listener("emulator-stopped", listener);
-        this.bus.send("cpu-stop");
+        this.v86.stop();
     });
 };
 
 /**
- * @ignore
- * @export
+ * Free resources associated with this instance
  */
-V86Starter.prototype.destroy = async function()
+V86.prototype.destroy = async function()
 {
     await this.stop();
 
@@ -729,28 +847,27 @@ V86Starter.prototype.destroy = async function()
     this.screen_adapter && this.screen_adapter.destroy();
     this.serial_adapter && this.serial_adapter.destroy();
     this.speaker_adapter && this.speaker_adapter.destroy();
+    this.virtio_console_adapter && this.virtio_console_adapter.destroy();
+    this.modem && this.modem.destroy();
 };
 
 /**
  * Restart (force a reboot).
- * @export
  */
-V86Starter.prototype.restart = function()
+V86.prototype.restart = function()
 {
-    this.bus.send("cpu-restart");
+    this.v86.restart();
 };
 
 /**
- * Add an event listener (the emulator is an event emitter). A list of events
- * can be found at [events.md](events.md).
+ * Add an event listener (the emulator is an event emitter).
  *
  * The callback function gets a single argument which depends on the event.
  *
  * @param {string} event Name of the event.
- * @param {function(*)} listener The callback function.
- * @export
+ * @param {function(?)} listener The callback function.
  */
-V86Starter.prototype.add_listener = function(event, listener)
+V86.prototype.add_listener = function(event, listener)
 {
     this.bus.register(event, listener, this);
 };
@@ -760,9 +877,8 @@ V86Starter.prototype.add_listener = function(event, listener)
  *
  * @param {string} event
  * @param {function(*)} listener
- * @export
  */
-V86Starter.prototype.remove_listener = function(event, listener)
+V86.prototype.remove_listener = function(event, listener)
 {
     this.bus.unregister(event, listener);
 };
@@ -780,9 +896,8 @@ V86Starter.prototype.remove_listener = function(event, listener)
  * state buffer.
  *
  * @param {ArrayBuffer} state
- * @export
  */
-V86Starter.prototype.restore_state = async function(state)
+V86.prototype.restore_state = async function(state)
 {
     dbg_assert(arguments.length === 1);
     this.v86.restore_state(state);
@@ -792,104 +907,18 @@ V86Starter.prototype.restore_state = async function(state)
  * Asynchronously save the current state of the emulator.
  *
  * @return {Promise<ArrayBuffer>}
- * @export
  */
-V86Starter.prototype.save_state = async function()
+V86.prototype.save_state = async function()
 {
     dbg_assert(arguments.length === 0);
     return this.v86.save_state();
 };
 
 /**
- * Return an object with several statistics. Return value looks similar to
- * (but can be subject to change in future versions or different
- * configurations, so use defensively):
- *
- * ```javascript
- * {
- *     "cpu": {
- *         "instruction_counter": 2821610069
- *     },
- *     "hda": {
- *         "sectors_read": 95240,
- *         "sectors_written": 952,
- *         "bytes_read": 48762880,
- *         "bytes_written": 487424,
- *         "loading": false
- *     },
- *     "cdrom": {
- *         "sectors_read": 0,
- *         "sectors_written": 0,
- *         "bytes_read": 0,
- *         "bytes_written": 0,
- *         "loading": false
- *     },
- *     "mouse": {
- *         "enabled": true
- *     },
- *     "vga": {
- *         "is_graphical": true,
- *         "res_x": 800,
- *         "res_y": 600,
- *         "bpp": 32
- *     }
- * }
- * ```
- *
- * @deprecated
- * @return {Object}
- * @export
- */
-V86Starter.prototype.get_statistics = function()
-{
-    console.warn("V86Starter.prototype.get_statistics is deprecated. Use events instead.");
-
-    var stats = {
-        cpu: {
-            instruction_counter: this.get_instruction_counter(),
-        },
-    };
-
-    if(!this.v86)
-    {
-        return stats;
-    }
-
-    var devices = this.v86.cpu.devices;
-
-    if(devices.hda)
-    {
-        stats.hda = devices.hda.stats;
-    }
-
-    if(devices.cdrom)
-    {
-        stats.cdrom = devices.cdrom.stats;
-    }
-
-    if(devices.ps2)
-    {
-        stats["mouse"] = {
-            "enabled": devices.ps2.use_mouse,
-        };
-    }
-
-    if(devices.vga)
-    {
-        stats["vga"] = {
-            "is_graphical": devices.vga.stats.is_graphical,
-        };
-    }
-
-    return stats;
-};
-
-/**
  * @return {number}
  * @ignore
- * @export
  */
-V86Starter.prototype.get_instruction_counter = function()
+V86.prototype.get_instruction_counter = function()
 {
     if(this.v86)
     {
@@ -904,11 +933,137 @@ V86Starter.prototype.get_instruction_counter = function()
 
 /**
  * @return {boolean}
- * @export
  */
-V86Starter.prototype.is_running = function()
+V86.prototype.is_running = function()
 {
     return this.cpu_is_running;
+};
+
+/**
+ * Set the image inserted in the floppy drive. Can be changed at runtime, as
+ * when physically changing the floppy disk.
+ */
+V86.prototype.set_fda = async function(file)
+{
+    const fda = this.v86.cpu.devices.fdc.drives[0];
+    if(file.url && !file.async)
+    {
+        await new Promise(resolve => {
+            load_file(file.url, {
+                done: result =>
+                {
+                    fda.insert_disk(new SyncBuffer(result));
+                    resolve();
+                }
+            });
+        });
+    }
+    else
+    {
+        const image = buffer_from_object(file, this.zstd_decompress_worker.bind(this));
+        image.onload = () =>
+        {
+            fda.insert_disk(image);
+        };
+        await image.load();
+    }
+};
+
+/**
+ * Set the image inserted in the second floppy drive, also at runtime.
+ */
+V86.prototype.set_fdb = async function(file)
+{
+    const fdb = this.v86.cpu.devices.fdc.drives[1];
+    if(file.url && !file.async)
+    {
+        await new Promise(resolve => {
+            load_file(file.url, {
+                done: result =>
+                {
+                    fdb.insert_disk(new SyncBuffer(result));
+                    resolve();
+                }
+            });
+        });
+    }
+    else
+    {
+        const image = buffer_from_object(file, this.zstd_decompress_worker.bind(this));
+        image.onload = () =>
+        {
+            fdb.insert_disk(image);
+        };
+        await image.load();
+    }
+};
+
+/**
+ * Eject floppy drive fda.
+ */
+V86.prototype.eject_fda = function()
+{
+    this.v86.cpu.devices.fdc.drives[0].eject_disk();
+};
+
+/**
+ * Eject second floppy drive fdb.
+ */
+V86.prototype.eject_fdb = function()
+{
+    this.v86.cpu.devices.fdc.drives[1].eject_disk();
+};
+
+/**
+ * Return buffer object of floppy disk of drive fda or null if the drive is empty.
+ * @return {Uint8Array|null}
+ */
+V86.prototype.get_disk_fda = function()
+{
+    return this.v86.cpu.devices.fdc.drives[0].get_buffer();
+};
+
+/**
+ * Return buffer object of second floppy disk of drive fdb or null if the drive is empty.
+ * @return {Uint8Array|null}
+ */
+V86.prototype.get_disk_fdb = function()
+{
+    return this.v86.cpu.devices.fdc.drives[1].get_buffer();
+};
+
+/**
+ * Set the image inserted in the CD-ROM drive. Can be changed at runtime, as
+ * when physically changing the CD-ROM.
+ */
+V86.prototype.set_cdrom = async function(file)
+{
+    if(file.url && !file.async)
+    {
+        load_file(file.url, {
+            done: result =>
+            {
+                this.v86.cpu.devices.cdrom.set_cdrom(new SyncBuffer(result));
+            },
+        });
+    }
+    else
+    {
+        const image = buffer_from_object(file, this.zstd_decompress_worker.bind(this));
+        image.onload = () =>
+        {
+            this.v86.cpu.devices.cdrom.set_cdrom(image);
+        };
+        await image.load();
+    }
+};
+
+/**
+ * Eject the CD-ROM.
+ */
+V86.prototype.eject_cdrom = function()
+{
+    this.v86.cpu.devices.cdrom.eject();
 };
 
 /**
@@ -917,49 +1072,49 @@ V86Starter.prototype.is_running = function()
  * Do nothing if there is no keyboard controller.
  *
  * @param {Array.<number>} codes
- * @export
+ * @param {number=} delay
  */
-V86Starter.prototype.keyboard_send_scancodes = function(codes)
+V86.prototype.keyboard_send_scancodes = async function(codes, delay)
 {
     for(var i = 0; i < codes.length; i++)
     {
         this.bus.send("keyboard-code", codes[i]);
+        if(delay) await new Promise(resolve => setTimeout(resolve, delay));
     }
 };
 
 /**
  * Send translated keys
- * @ignore
- * @export
+ * @param {Array.<number>} codes
+ * @param {number=} delay
  */
-V86Starter.prototype.keyboard_send_keys = function(codes)
+V86.prototype.keyboard_send_keys = async function(codes, delay)
 {
     for(var i = 0; i < codes.length; i++)
     {
         this.keyboard_adapter.simulate_press(codes[i]);
+        if(delay) await new Promise(resolve => setTimeout(resolve, delay));
     }
 };
 
 /**
- * Send text
- * @ignore
- * @export
+ * Send text, assuming the guest OS uses a US keyboard layout
+ * @param {string} string
+ * @param {number=} delay
  */
-V86Starter.prototype.keyboard_send_text = function(string)
+V86.prototype.keyboard_send_text = async function(string, delay)
 {
     for(var i = 0; i < string.length; i++)
     {
         this.keyboard_adapter.simulate_char(string[i]);
+        if(delay) await new Promise(resolve => setTimeout(resolve, delay));
     }
 };
 
 /**
- * Download a screenshot.
- *
- * @ignore
- * @export
+ * Download a screenshot (returns an <img> element, only works in browsers)
  */
-V86Starter.prototype.screen_make_screenshot = function()
+V86.prototype.screen_make_screenshot = function()
 {
     if(this.screen_adapter)
     {
@@ -973,11 +1128,8 @@ V86Starter.prototype.screen_make_screenshot = function()
  *
  * @param {number} sx
  * @param {number} sy
- *
- * @ignore
- * @export
  */
-V86Starter.prototype.screen_set_scale = function(sx, sy)
+V86.prototype.screen_set_scale = function(sx, sy)
 {
     if(this.screen_adapter)
     {
@@ -986,12 +1138,9 @@ V86Starter.prototype.screen_set_scale = function(sx, sy)
 };
 
 /**
- * Go fullscreen.
- *
- * @ignore
- * @export
+ * Go fullscreen (only browsers)
  */
-V86Starter.prototype.screen_go_fullscreen = function()
+V86.prototype.screen_go_fullscreen = function()
 {
     if(!this.screen_adapter)
     {
@@ -1031,21 +1180,21 @@ V86Starter.prototype.screen_go_fullscreen = function()
 /**
  * Lock the mouse cursor: It becomes invisble and is not moved out of the
  * browser window.
- *
- * @ignore
- * @export
  */
-V86Starter.prototype.lock_mouse = function()
+V86.prototype.lock_mouse = async function()
 {
-    var elem = document.body;
+    const elem = document.body;
 
-    var fn = elem["requestPointerLock"] ||
-                elem["mozRequestPointerLock"] ||
-                elem["webkitRequestPointerLock"];
-
-    if(fn)
+    try
     {
-        fn.call(elem);
+        await elem.requestPointerLock({
+            unadjustedMovement: true,
+        });
+    }
+    catch(e)
+    {
+        // as per MDN, retry without unadjustedMovement option
+        await elem.requestPointerLock();
     }
 };
 
@@ -1054,36 +1203,36 @@ V86Starter.prototype.lock_mouse = function()
  *
  * @param {boolean} enabled
  */
-V86Starter.prototype.mouse_set_status = function(enabled)
+V86.prototype.mouse_set_enabled = function(enabled)
 {
     if(this.mouse_adapter)
     {
         this.mouse_adapter.emu_enabled = enabled;
+        this.mouse_adapter.update_cursor();
     }
 };
+V86.prototype.mouse_set_status = V86.prototype.mouse_set_enabled;
 
 /**
  * Enable or disable sending keyboard events to the emulated PS2 controller.
  *
  * @param {boolean} enabled
- * @export
  */
-V86Starter.prototype.keyboard_set_status = function(enabled)
+V86.prototype.keyboard_set_enabled = function(enabled)
 {
     if(this.keyboard_adapter)
     {
         this.keyboard_adapter.emu_enabled = enabled;
     }
 };
-
+V86.prototype.keyboard_set_status = V86.prototype.keyboard_set_enabled;
 
 /**
  * Send a string to the first emulated serial terminal.
  *
  * @param {string} data
- * @export
  */
-V86Starter.prototype.serial0_send = function(data)
+V86.prototype.serial0_send = function(data)
 {
     for(var i = 0; i < data.length; i++)
     {
@@ -1095,9 +1244,8 @@ V86Starter.prototype.serial0_send = function(data)
  * Send bytes to a serial port (to be received by the emulated PC).
  *
  * @param {Uint8Array} data
- * @export
  */
-V86Starter.prototype.serial_send_bytes = function(serial, data)
+V86.prototype.serial_send_bytes = function(serial, data)
 {
     for(var i = 0; i < data.length; i++)
     {
@@ -1106,56 +1254,47 @@ V86Starter.prototype.serial_send_bytes = function(serial, data)
 };
 
 /**
- * Mount another filesystem to the current filesystem.
- * @param {string} path Path for the mount point
- * @param {string|undefined} baseurl
- * @param {string|undefined} basefs As a JSON string
- * @param {function(Object)=} callback
- * @export
+ * Set or clear the data carrier detect (DCD) status of a serial port.
+ *
+ * @param {number} serial
+ * @param {boolean} status
  */
-V86Starter.prototype.mount_fs = async function(path, baseurl, basefs, callback)
+V86.prototype.serial_set_carrier_detect = function(serial, status)
 {
-    let file_storage = new MemoryFileStorage();
+    this.bus.send("serial" + serial + "-carrier-detect-input", status);
+};
 
-    if(baseurl)
-    {
-        file_storage = new ServerFileStorageWrapper(file_storage, baseurl);
-    }
-    const newfs = new FS(file_storage, this.fs9p.qidcounter);
-    const mount = () =>
-    {
-        const idx = this.fs9p.Mount(path, newfs);
-        if(!callback)
-        {
-            return;
-        }
-        if(idx === -ENOENT)
-        {
-            callback(new FileNotFoundError());
-        }
-        else if(idx === -EEXIST)
-        {
-            callback(new FileExistsError());
-        }
-        else if(idx < 0)
-        {
-            dbg_assert(false, "Unexpected error code: " + (-idx));
-            callback(new Error("Failed to mount. Error number: " + (-idx)));
-        }
-        else
-        {
-            callback(null);
-        }
-    };
-    if(baseurl)
-    {
-        dbg_assert(typeof basefs === "object", "Filesystem: basefs must be a JSON object");
-        newfs.load_from_json(basefs, () => mount());
-    }
-    else
-    {
-        mount();
-    }
+/**
+ * Set or clear the ring indicator (RING) status of a serial port.
+ *
+ * @param {number} serial
+ * @param {boolean} status
+ */
+V86.prototype.serial_set_ring_indicator = function(serial, status)
+{
+    this.bus.send("serial" + serial + "-ring-indicator-input", status);
+};
+
+/**
+ * Set or clear the data set ready (DSR) status of a serial port.
+ *
+ * @param {number} serial
+ * @param {boolean} status
+ */
+V86.prototype.serial_set_data_set_ready = function(serial, status)
+{
+    this.bus.send("serial" + serial + "-data-set-ready-input", status);
+};
+
+/**
+ * Set or clear the clear to send (CTS) status of a serial port.
+ *
+ * @param {number} serial
+ * @param {boolean} status
+ */
+V86.prototype.serial_set_clear_to_send = function(serial, status)
+{
+    this.bus.send("serial" + serial + "-clear-to-send-input", status);
 };
 
 /**
@@ -1164,9 +1303,8 @@ V86Starter.prototype.mount_fs = async function(path, baseurl, basefs, callback)
  *
  * @param {string} file
  * @param {Uint8Array} data
- * @export
  */
-V86Starter.prototype.create_file = async function(file, data)
+V86.prototype.create_file = async function(file, data)
 {
     dbg_assert(arguments.length === 2);
     var fs = this.fs9p;
@@ -1198,9 +1336,8 @@ V86Starter.prototype.create_file = async function(file, data)
  * initialized.
  *
  * @param {string} file
- * @export
  */
-V86Starter.prototype.read_file = async function(file)
+V86.prototype.read_file = async function(file)
 {
     dbg_assert(arguments.length === 1);
     var fs = this.fs9p;
@@ -1222,7 +1359,11 @@ V86Starter.prototype.read_file = async function(file)
     }
 };
 
-V86Starter.prototype.automatically = function(steps)
+/*
+ * @deprecated
+ * Use wait_until_vga_screen_contains etc.
+ */
+V86.prototype.automatically = function(steps)
 {
     const run = (steps) =>
     {
@@ -1243,24 +1384,13 @@ V86Starter.prototype.automatically = function(steps)
 
         if(step.vga_text)
         {
-            const screen = this.screen_adapter.get_text_screen();
-
-            for(let line of screen)
-            {
-                if(line.includes(step.vga_text))
-                {
-                    run(remaining_steps);
-                    return;
-                }
-            }
-
-            setTimeout(() => run(steps), 1000);
+            this.wait_until_vga_screen_contains(step.vga_text).then(() => run(remaining_steps));
             return;
         }
 
         if(step.keyboard_send)
         {
-            if(step.keyboard_send instanceof Array)
+            if(Array.isArray(step.keyboard_send))
             {
                 this.keyboard_send_scancodes(step.keyboard_send);
             }
@@ -1285,7 +1415,112 @@ V86Starter.prototype.automatically = function(steps)
     };
 
     run(steps);
+};
 
+/**
+ * Wait until expected text is present on the VGA text screen.
+ *
+ * Returns immediately if the expected text is already present on screen
+ * at the time this funtion is called.
+ *
+ * An optional timeout may be specified in `options.timeout_msec`, returns
+ * false if the timeout expires before the expected text could be detected.
+ *
+ * Expected text (or texts, see below) must be of type string or RegExp,
+ * strings are tested against the beginning of a screen line, regular
+ * expressions against the full line but may use wildcards for partial
+ * matching.
+ *
+ * Two methods of text detection are supported depending on the type of the
+ * argument `expected`:
+ *
+ * 1. If `expected` is a string or RegExp then the given text string or
+ *    regular expression may match any line on screen for this function
+ *    to succeed.
+ *
+ * 2. If `expected` is an array of strings and/or RegExp objects then the
+ *    list of expected lines must match exactly at "the bottom" of the
+ *    screen. The "bottom" line is the first non-empty line starting from
+ *    the screen's end.
+ *    Expected lines should not contain any trailing whitespace and/or
+ *    newline characters. Expecting an empty line is valid.
+ *
+ * Returns `true` on success and `false` when the timeout has expired.
+ *
+ * @param {string|RegExp|Array<string|RegExp>} expected
+ * @param {{timeout_msec:(number|undefined)}=} options
+ */
+V86.prototype.wait_until_vga_screen_contains = async function(expected, options)
+{
+    const match_multi = Array.isArray(expected);
+    const timeout_msec = options?.timeout_msec || 0;
+    const changed_rows = new Set();
+    const screen_put_char = args => changed_rows.add(args[0]);
+    const contains_expected = (screen_line, pattern) => pattern.test ? pattern.test(screen_line) : screen_line.startsWith(pattern);
+    const screen_lines = [];
+
+    this.add_listener("screen-put-char", screen_put_char);
+
+    for(const screen_line of this.screen_adapter.get_text_screen())
+    {
+        if(match_multi)
+        {
+            screen_lines.push(screen_line.trimRight());
+        }
+        else if(contains_expected(screen_line, expected))
+        {
+            this.remove_listener("screen-put-char", screen_put_char);
+            return true;
+        }
+    }
+
+    let succeeded = false;
+    const end = timeout_msec ? performance.now() + timeout_msec : 0;
+    loop: while(!end || performance.now() < end)
+    {
+        if(match_multi)
+        {
+            let screen_height = screen_lines.length;
+            while(screen_height > 0 && screen_lines[screen_height - 1] === "")
+            {
+                screen_height--;
+            }
+            const screen_offset = screen_height - expected.length;
+            if(screen_offset >= 0)
+            {
+                let matches = true;
+                for(let i = 0; i < expected.length && matches; i++)
+                {
+                    matches = contains_expected(screen_lines[screen_offset + i], expected[i]);
+                }
+                if(matches)
+                {
+                    succeeded = true;
+                    break;
+                }
+            }
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        for(const row of changed_rows)
+        {
+            const screen_line = this.screen_adapter.get_text_row(row);
+            if(match_multi)
+            {
+                screen_lines[row] = screen_line.trimRight();
+            }
+            else if(contains_expected(screen_line, expected))
+            {
+                succeeded = true;
+                break loop;
+            }
+        }
+        changed_rows.clear();
+    }
+
+    this.remove_listener("screen-put-char", screen_put_char);
+    return succeeded;
 };
 
 /**
@@ -1295,7 +1530,7 @@ V86Starter.prototype.automatically = function(steps)
  * @param {number} length
  * @returns
  */
-V86Starter.prototype.read_memory = function(offset, length)
+V86.prototype.read_memory = function(offset, length)
 {
     return this.v86.cpu.read_blob(offset, length);
 };
@@ -1306,9 +1541,36 @@ V86Starter.prototype.read_memory = function(offset, length)
  * @param {Array.<number>|Uint8Array} blob
  * @param {number} offset
  */
-V86Starter.prototype.write_memory = function(blob, offset)
+V86.prototype.write_memory = function(blob, offset)
 {
     this.v86.cpu.write_blob(blob, offset);
+};
+
+/*
+ * @param {HTMLElement} element
+ * @param {Function} [xterm_lib]
+ */
+V86.prototype.set_serial_container_xtermjs = function(element, xterm_lib = window["Terminal"])
+{
+    this.serial_adapter && this.serial_adapter.destroy && this.serial_adapter.destroy();
+    this.serial_adapter = new SerialAdapterXtermJS(element, this.bus, xterm_lib);
+    this.serial_adapter.show();
+};
+
+/*
+ * @param {HTMLElement} element
+ * @param {Function} [xterm_lib]
+ */
+V86.prototype.set_virtio_console_container_xtermjs = function(element, xterm_lib = window["Terminal"])
+{
+    this.virtio_console_adapter && this.virtio_console_adapter.destroy && this.virtio_console_adapter.destroy();
+    this.virtio_console_adapter = new VirtioConsoleAdapterXtermJS(element, this.bus, xterm_lib);
+    this.virtio_console_adapter.show();
+};
+
+V86.prototype.get_instruction_stats = function()
+{
+    return print_stats.stats_to_string(this.v86.cpu);
 };
 
 /**
@@ -1335,20 +1597,18 @@ function FileNotFoundError(message)
 }
 FileNotFoundError.prototype = Error.prototype;
 
-// Closure Compiler's way of exporting
-if(typeof window !== "undefined")
+/* global module, self */
+
+if(typeof module !== "undefined" && typeof module.exports !== "undefined")
 {
-    window["V86Starter"] = V86Starter;
-    window["V86"] = V86Starter;
+    module.exports["V86"] = V86;
 }
-else if(typeof module !== "undefined" && typeof module.exports !== "undefined")
+else if(typeof window !== "undefined")
 {
-    module.exports["V86Starter"] = V86Starter;
-    module.exports["V86"] = V86Starter;
+    window["V86"] = V86;
 }
 else if(typeof importScripts === "function")
 {
     // web worker
-    self["V86Starter"] = V86Starter;
-    self["V86"] = V86Starter;
+    self["V86"] = V86;
 }

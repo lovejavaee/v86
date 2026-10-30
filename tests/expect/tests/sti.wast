@@ -24,7 +24,7 @@
   (import "e" "instr_FB_without_fault" (func $e.instr_FB_without_fault (type $t4)))
   (import "e" "trigger_gp_jit" (func $e.trigger_gp_jit (type $t2)))
   (import "e" "handle_irqs" (func $e.handle_irqs (type $t0)))
-  (import "e" "trigger_fault_end_jit" (func $e.trigger_fault_end_jit (type $t0)))
+  (import "e" "exit_jit" (func $e.exit_jit (type $t0)))
   (import "e" "m" (memory {normalised output}))
   (func $f (export "f") (type $t1) (param $p0 i32)
     (local $l0 i32) (local $l1 i32) (local $l2 i32) (local $l3 i32) (local $l4 i32) (local $l5 i32) (local $l6 i32) (local $l7 i32) (local $l8 i32)
@@ -67,7 +67,7 @@
                 (br_if $B4
                   (i32.eq
                     (get_local $p0)
-                    (i32.const 1))))
+                    (i32.const 0))))
               (set_local $l8
                 (i32.add
                   (get_local $l8)
@@ -150,7 +150,7 @@
               (then
                 (call $e.trigger_gp_jit
                   (i32.const 0)
-                  (i32.const 4096))
+                  (i32.const 0))
                 (br $B1)))
             (i32.store
               (i32.const 560)
@@ -227,7 +227,7 @@
       (i32.store
         (i32.const 92)
         (get_local $l7))
-      (call $e.trigger_fault_end_jit)
+      (call $e.exit_jit)
       (i32.store
         (i32.const 664)
         (i32.add

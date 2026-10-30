@@ -1,16 +1,21 @@
-"use strict";
+import { CPU } from "./cpu.js";
+import { save_state, restore_state } from "./state.js";
+export { V86 } from "./browser/starter.js";
 
 /**
  * @constructor
  * @param {Object=} wasm
  */
-function v86(bus, wasm)
+export function v86(bus, wasm)
 {
     /** @type {boolean} */
     this.running = false;
 
     /** @type {boolean} */
     this.stopping = false;
+
+    /** @type {boolean} */
+    this.idle = true;
 
     this.tick_counter = 0;
     this.worker = null;
@@ -19,10 +24,6 @@ function v86(bus, wasm)
     this.cpu = new CPU(bus, wasm, () => { this.idle && this.next_tick(0); });
 
     this.bus = bus;
-    bus.register("cpu-init", this.init, this);
-    bus.register("cpu-run", this.run, this);
-    bus.register("cpu-stop", this.stop, this);
-    bus.register("cpu-restart", this.restart, this);
 
     this.register_yield();
 }
@@ -50,7 +51,7 @@ v86.prototype.do_tick = function()
     }
 
     this.idle = false;
-    const t = this.cpu.main_run();
+    const t = this.cpu.main_loop();
 
     this.next_tick(t);
 };
@@ -85,8 +86,7 @@ v86.prototype.destroy = function()
 
 v86.prototype.restart = function()
 {
-    this.cpu.reset_cpu();
-    this.cpu.load_bios();
+    this.cpu.reboot_internal();
 };
 
 v86.prototype.init = function(settings)
@@ -99,6 +99,7 @@ if(typeof process !== "undefined")
 {
     v86.prototype.yield = function(t, tick)
     {
+        /* global global */
         if(t < 1)
         {
             global.setImmediate(tick => this.yield_callback(tick), tick);
@@ -112,17 +113,30 @@ if(typeof process !== "undefined")
     v86.prototype.register_yield = function() {};
     v86.prototype.unregister_yield = function() {};
 }
+else if(globalThis["scheduler"] && typeof globalThis["scheduler"]["postTask"] === "function" && location.href.includes("use-scheduling-api"))
+{
+    v86.prototype.yield = function(t, tick)
+    {
+        t = Math.max(0, t);
+        globalThis["scheduler"]["postTask"](() => this.yield_callback(tick), { delay: t });
+    };
+
+    v86.prototype.register_yield = function() {};
+    v86.prototype.unregister_yield = function() {};
+}
 else if(typeof Worker !== "undefined")
 {
     // XXX: This has a slightly lower throughput compared to window.postMessage
 
     function the_worker()
     {
+        let timeout;
         globalThis.onmessage = function(e)
         {
             const t = e.data.t;
+            timeout = timeout && clearTimeout(timeout);
             if(t < 1) postMessage(e.data.tick);
-            else setTimeout(() => postMessage(e.data.tick), t);
+            else timeout = setTimeout(() => postMessage(e.data.tick), t);
         };
     }
 
@@ -141,7 +155,7 @@ else if(typeof Worker !== "undefined")
 
     v86.prototype.unregister_yield = function()
     {
-        this.worker.terminate();
+        this.worker && this.worker.terminate();
         this.worker = null;
     };
 }
@@ -151,8 +165,7 @@ else if(typeof Worker !== "undefined")
 //    // TODO: Make this deactivatable, for other applications
 //    //       using postMessage
 //
-//    /** @const */
-//    let MAGIC_POST_MESSAGE = 0xAA55;
+//    const MAGIC_POST_MESSAGE = 0xAA55;
 //
 //    v86.prototype.yield = function(t)
 //    {
@@ -195,16 +208,16 @@ else
 v86.prototype.save_state = function()
 {
     // TODO: Should be implemented here, not on cpu
-    return this.cpu.save_state();
+    return save_state(this.cpu);
 };
 
 v86.prototype.restore_state = function(state)
 {
     // TODO: Should be implemented here, not on cpu
-    return this.cpu.restore_state(state);
+    return restore_state(this.cpu, state);
 };
 
-
+/* global require */
 if(typeof performance === "object" && performance.now)
 {
     v86.microtick = performance.now.bind(performance);

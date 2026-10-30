@@ -7,7 +7,7 @@
 
 window.onload = function()
 {
-    var emulator = new V86Starter({
+    var emulator = new V86({
         wasm_path: "../../build/v86.wasm",
         memory_size: 32 * 1024 * 1024,
         vga_memory_size: 2 * 1024 * 1024,
@@ -19,7 +19,6 @@ window.onload = function()
     });
 
     setTimeout(() => {
-        emulator.stop();
         emulator.destroy();
         console.log("Emulator freed. Check using devtools (in chromium: Memory -> Heap Snapshot -> click collect garbage -> take snapshot).");
     }, 3 * 1000);

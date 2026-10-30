@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-"use strict";
 
-// This test checks that calling emulator.stop() will remove all event
+import url from "node:url";
+const __dirname = url.fileURLToPath(new URL(".", import.meta.url));
+
+// This test checks that calling emulator.destroy() will remove all event
 // listeners, so that the nodejs process cleanly and automatically exits.
 
 const TEST_RELEASE_BUILD = +process.env.TEST_RELEASE_BUILD;
-
-const fs = require("fs");
-var V86 = require(`../../build/${TEST_RELEASE_BUILD ? "libv86" : "libv86-debug"}.js`).V86;
+const { V86 } = await import(TEST_RELEASE_BUILD ? "../../build/libv86.mjs" : "../../src/main.js");
 
 process.on("unhandledRejection", exn => { throw exn; });
 
@@ -20,7 +20,7 @@ const config = {
     memory_size: 32 * 1024 * 1024,
     filesystem: {},
     log_level: 0,
-    screen_dummy: true,
+    disable_jit: +process.env.DISABLE_JIT,
 };
 
 const emulator = new V86(config);
@@ -28,6 +28,6 @@ const emulator = new V86(config);
 setTimeout(function()
     {
         console.error("Calling stop()");
-        emulator.stop();
+        emulator.destroy();
         console.error("Called stop()");
     }, 3000);

@@ -1,11 +1,30 @@
 use std::collections::HashMap;
+use std::mem::transmute;
 
-use leb::{
+use crate::leb::{
     write_fixed_leb16_at_idx, write_fixed_leb32_at_idx, write_leb_i32, write_leb_i64, write_leb_u32,
 };
-use std::mem::transmute;
-use util::{SafeToU8, SafeToU16};
-use wasmgen::wasm_opcodes as op;
+use crate::wasmgen::wasm_opcodes as op;
+
+pub trait SafeToU8 {
+    fn safe_to_u8(self) -> u8;
+}
+impl SafeToU8 for usize {
+    fn safe_to_u8(self) -> u8 {
+        dbg_assert!(self <= u8::MAX as usize);
+        self as u8
+    }
+}
+
+pub trait SafeToU16 {
+    fn safe_to_u16(self) -> u16;
+}
+impl SafeToU16 for usize {
+    fn safe_to_u16(self) -> u16 {
+        dbg_assert!(self <= u16::MAX as usize);
+        self as u16
+    }
+}
 
 #[derive(PartialEq)]
 #[allow(non_camel_case_types)]
@@ -961,14 +980,13 @@ impl WasmBuilder {
 
 #[cfg(test)]
 mod tests {
+    use super::{FunctionType, WasmBuilder, WASM_MODULE_ARGUMENT_COUNT};
     use std::fs::File;
     use std::io::Write;
-    use wasmgen::wasm_builder;
-    use wasmgen::wasm_builder::FunctionType;
 
     #[test]
     fn import_table_management() {
-        let mut w = wasm_builder::WasmBuilder::new();
+        let mut w = WasmBuilder::new();
 
         assert_eq!(0, w.get_fn_idx("foo", FunctionType::FN0));
         assert_eq!(1, w.get_fn_idx("bar", FunctionType::FN1));
@@ -978,7 +996,7 @@ mod tests {
 
     #[test]
     fn builder_test() {
-        let mut m = wasm_builder::WasmBuilder::new();
+        let mut m = WasmBuilder::new();
 
         m.call_fn("foo", FunctionType::FN0);
         m.call_fn("bar", FunctionType::FN0);
@@ -1006,7 +1024,7 @@ mod tests {
         m.free_local(local1);
 
         let local3 = m.alloc_local();
-        assert_eq!(local3.idx(), wasm_builder::WASM_MODULE_ARGUMENT_COUNT);
+        assert_eq!(local3.idx(), WASM_MODULE_ARGUMENT_COUNT);
 
         m.free_local(local2);
         m.free_local(local3);

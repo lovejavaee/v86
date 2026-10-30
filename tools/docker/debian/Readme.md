@@ -1,25 +1,31 @@
-You can build a Linux image for use with v86:
+Debian-xfce docker example:
 
-1. Run `./build-container.sh` to build the Docker container and v86 images (requires dockerd)
-2. Run `./build-state.js` to build a state image in order to skip the boot process
-3. Optionally, compress the `debian-state-base.bin` file using zstd (v86 automatically detects the zstd magic and decompresses on the fly)
-4. Run a webserver serving repo root and go to `examples/debian.html` in a browser
+For using split raw disk:
+1. run `bash build-raw-disk.sh` to build images
+2. run `./build-state-raw-disk.js` to build the state
+3. An example frontend is `examples/debian-raw-disk.html`
 
-If you want to see more info you can run it in a debug mode, to do so add a new profile in the `src/browser/main.js` file to the `oses` variable like so:
+For using 9p filesystem:
 
-```js
-var oses = [
-    {
-        id: "debian",
-        name: "Debian",
-        memory_size: 512 * 1024 * 1024,
-        vga_memory_size: 8 * 1024 * 1024,
-        state: { url: host + "debian-state-base.bin" },
-        filesystem: { baseurl: host + "debian-9p-rootfs-flat/" }
-    },
-    ...
+1. run `bash build-9p.sh` to build images
+2. run `./build-state-9p.js` to build the state
+3. An example frontend is `examples/debian-9p.html`
+
+For setting up website:
+
+1. Either build v86 or downloading the release and place `v86.wasm` and `libv86.js` in `build` directory
+2. Launch a server at the root of this repository, e.g. `python3 -m http.server 8000`
+3. Open `http://localhost:8000/examples/debian-raw-disk.html` (raw disk) or `http://localhost:8000/examples/debian-9p.html` (9p filesystem)
+
+Network:
+
+Enable network by typing the following command in the xfce terminal:
+
+```
+sudo dhclient enp0s5
 ```
 
-Save it and go to `debug.html?profile=debian` to start the generated container.
+Credit:
 
-You can modify the `Dockerfile` to customize the generated Linux image.
+v86 debian config from sandbox-bio: https://github.com/sandbox-bio/v86/tree/master/tools/docker/debian
+

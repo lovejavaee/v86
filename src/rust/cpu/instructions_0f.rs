@@ -1,9 +1,5 @@
 #![allow(non_snake_case)]
 
-extern "C" {
-    fn get_rand_int() -> i32;
-}
-
 unsafe fn undefined_instruction() {
     dbg_assert!(false, "Undefined instructions");
     trigger_ud()
@@ -13,26 +9,27 @@ unsafe fn unimplemented_sse() {
     trigger_ud()
 }
 
-use cpu::arith::{
+use crate::config;
+use crate::cpu::arith::{
     bsf16, bsf32, bsr16, bsr32, bt_mem, bt_reg, btc_mem, btc_reg, btr_mem, btr_reg, bts_mem,
-    bts_reg, cmpxchg8, cmpxchg16, cmpxchg32, popcnt, shld16, shld32, shrd16, shrd32, xadd8, xadd16,
-    xadd32,
+    bts_reg, cmpxchg16, cmpxchg32, cmpxchg8, popcnt, shld16, shld32, shrd16, shrd32, xadd16,
+    xadd32, xadd8,
 };
-use cpu::arith::{
+use crate::cpu::arith::{
     imul_reg16, imul_reg32, saturate_sd_to_sb, saturate_sd_to_sw, saturate_sd_to_ub,
     saturate_sw_to_sb, saturate_sw_to_ub, saturate_ud_to_ub, saturate_uw,
 };
-use cpu::cpu::*;
-use cpu::fpu::fpu_set_tag_word;
-use cpu::global_pointers::*;
-use cpu::misc_instr::{
+use crate::cpu::cpu::*;
+use crate::cpu::fpu::fpu_set_tag_word;
+use crate::cpu::global_pointers::*;
+use crate::cpu::misc_instr::{
     adjust_stack_reg, bswap, cmovcc16, cmovcc32, fxrstor, fxsave, get_stack_pointer, jmpcc16,
     jmpcc32, push16, push32_sreg, setcc_mem, setcc_reg, test_b, test_be, test_l, test_le, test_o,
     test_p, test_s, test_z,
 };
-use cpu::misc_instr::{lar, lsl, verr, verw};
-use cpu::misc_instr::{lss16, lss32};
-use cpu::sse_instr::*;
+use crate::cpu::misc_instr::{lar, lsl, verr, verw};
+use crate::cpu::misc_instr::{lss16, lss32};
+use crate::cpu::sse_instr::*;
 
 #[no_mangle]
 pub unsafe fn instr16_0F00_0_mem(addr: i32) {
@@ -274,11 +271,11 @@ pub unsafe fn instr16_0F01_4_reg(r: i32) {
 pub unsafe fn instr32_0F01_4_reg(r: i32) { write_reg32(r, *cr); }
 #[no_mangle]
 pub unsafe fn instr16_0F01_4_mem(addr: i32) {
-    return_on_pagefault!(safe_write16(addr, *cr));
+    return_on_pagefault!(safe_write16(addr, *cr & 0xFFFF));
 }
 #[no_mangle]
 pub unsafe fn instr32_0F01_4_mem(addr: i32) {
-    return_on_pagefault!(safe_write16(addr, *cr));
+    return_on_pagefault!(safe_write16(addr, *cr & 0xFFFF));
 }
 
 #[no_mangle]
@@ -554,14 +551,33 @@ pub unsafe fn instr_660F12_mem(addr: i32, r: i32) {
     write_xmm64(r, data);
 }
 #[no_mangle]
-pub unsafe fn instr_F20F12_mem(_addr: i32, _r: i32) { unimplemented_sse(); }
+pub unsafe fn instr_F20F12(source: u64, r: i32) {
+    // movddup xmm1, xmm2/m64
+    write_xmm_reg128(
+        r,
+        reg128 {
+            u64: [source, source],
+        },
+    );
+}
+pub unsafe fn instr_F20F12_reg(r1: i32, r2: i32) { instr_F20F12(read_xmm64s(r1), r2); }
+pub unsafe fn instr_F20F12_mem(addr: i32, r: i32) {
+    instr_F20F12(return_on_pagefault!(safe_read64s(addr)), r);
+}
 #[no_mangle]
-pub unsafe fn instr_F20F12_reg(_r1: i32, _r2: i32) { unimplemented_sse(); }
-#[no_mangle]
-pub unsafe fn instr_F30F12_mem(_addr: i32, _r: i32) { unimplemented_sse(); }
-#[no_mangle]
-pub unsafe fn instr_F30F12_reg(_r1: i32, _r2: i32) { unimplemented_sse(); }
-
+pub unsafe fn instr_F30F12(source: reg128, r: i32) {
+    // movsldup xmm1, xmm2/m128
+    write_xmm_reg128(
+        r,
+        reg128 {
+            u32: [source.u32[0], source.u32[0], source.u32[2], source.u32[2]],
+        },
+    );
+}
+pub unsafe fn instr_F30F12_reg(r1: i32, r2: i32) { instr_F30F12(read_xmm128s(r1), r2); }
+pub unsafe fn instr_F30F12_mem(addr: i32, r: i32) {
+    instr_F30F12(return_on_pagefault!(safe_read128s(addr)), r);
+}
 pub unsafe fn instr_0F13_mem(addr: i32, r: i32) {
     // movlps m64, xmm
     movl_r128_m64(addr, r);
@@ -658,10 +674,19 @@ pub unsafe fn instr_660F16_mem(addr: i32, r: i32) {
 }
 pub unsafe fn instr_660F16_reg(_r1: i32, _r2: i32) { trigger_ud(); }
 #[no_mangle]
-pub unsafe fn instr_F30F16_reg(_r1: i32, _r2: i32) { unimplemented_sse(); }
-#[no_mangle]
-pub unsafe fn instr_F30F16_mem(_addr: i32, _r: i32) { unimplemented_sse(); }
-
+pub unsafe fn instr_F30F16(source: reg128, r: i32) {
+    // movshdup xmm1, xmm2/m128
+    write_xmm_reg128(
+        r,
+        reg128 {
+            u32: [source.u32[1], source.u32[1], source.u32[3], source.u32[3]],
+        },
+    );
+}
+pub unsafe fn instr_F30F16_reg(r1: i32, r2: i32) { instr_F30F16(read_xmm128s(r1), r2); }
+pub unsafe fn instr_F30F16_mem(addr: i32, r: i32) {
+    instr_F30F16(return_on_pagefault!(safe_read128s(addr)), r);
+}
 pub unsafe fn instr_0F17_mem(addr: i32, r: i32) {
     // movhps m64, xmm
     movh_r128_m64(addr, r);
@@ -786,12 +811,14 @@ pub unsafe fn instr_0F22(r: i32, creg: i32) {
                 if 0 != (*cr.offset(4) ^ data) & (CR4_PGE | CR4_PSE | CR4_PAE) {
                     full_clear_tlb();
                 }
+                let old_cr4 = *cr.offset(4);
+                *cr.offset(4) = data;
                 if data & CR4_PAE != 0
-                    && 0 != (*cr.offset(4) ^ data) & (CR4_PGE | CR4_PSE | CR4_SMEP)
+                    && 0 != (old_cr4 ^ data) & (CR4_PAE | CR4_PGE | CR4_PSE | CR4_SMEP)
+                    && *cr.offset(0) & CR0_PG != 0
                 {
                     load_pdpte(*cr.offset(3));
                 }
-                *cr.offset(4) = data;
             }
         },
         _ => {
@@ -899,9 +926,12 @@ pub unsafe fn instr_660F2A(source: u64, r: i32) {
         f64: [source[0] as f64, source[1] as f64],
     };
     write_xmm_reg128(r, result);
+}
+#[no_mangle]
+pub unsafe fn instr_660F2A_reg(r1: i32, r2: i32) {
+    instr_660F2A(read_mmx64s(r1), r2);
     transition_fpu_to_mmx();
 }
-pub unsafe fn instr_660F2A_reg(r1: i32, r2: i32) { instr_660F2A(read_mmx64s(r1), r2); }
 pub unsafe fn instr_660F2A_mem(addr: i32, r: i32) {
     instr_660F2A(return_on_pagefault!(safe_read64s(addr)), r);
 }
@@ -1166,6 +1196,18 @@ pub unsafe fn instr_0F30() {
     }
 
     match index {
+        MSR_EFER => {
+            let value = (high as u64) << 32 | (low as u32) as u64;
+            dbg_assert!(
+                value & !EFER_NXE == 0,
+                "Unimplemented EFER bits: {:#x}",
+                value
+            );
+            if value != *efer {
+                full_clear_tlb();
+            }
+            *efer = value;
+        },
         IA32_SYSENTER_CS => *sysenter_cs = low & 0xFFFF,
         IA32_SYSENTER_EIP => *sysenter_eip = low,
         IA32_SYSENTER_ESP => *sysenter_esp = low,
@@ -1174,17 +1216,19 @@ pub unsafe fn instr_0F30() {
         IA32_APIC_BASE => {
             dbg_assert!(
                 high == 0,
-                ("Changing APIC address (high 32 bits) not supported")
+                "Changing APIC address (high 32 bits) not supported"
             );
             let address = low & !(IA32_APIC_BASE_BSP | IA32_APIC_BASE_EXTD | IA32_APIC_BASE_EN);
             dbg_assert!(
-                address == APIC_ADDRESS,
-                ("Changing APIC address not supported")
+                (address == 0 && !*acpi_enabled) // windows me
+                || address == APIC_MEM_ADDRESS as i32,
+                "Changing APIC address not supported"
             );
             dbg_assert!(low & IA32_APIC_BASE_EXTD == 0, "x2apic not supported");
             *apic_enabled = low & IA32_APIC_BASE_EN == IA32_APIC_BASE_EN
         },
         IA32_TIME_STAMP_COUNTER => set_tsc(low as u32, high as u32),
+        IA32_BIOS_UPDT_TRIG => {}, // windows xp
         IA32_BIOS_SIGN_ID => {},
         MISC_FEATURE_ENABLES => {
             // Linux 4, see: https://patchwork.kernel.org/patch/9528279/
@@ -1197,11 +1241,27 @@ pub unsafe fn instr_0F30() {
             // Only used in 64 bit mode (by SWAPGS), but set by kvm-unit-test
             dbg_log!("GS Base written");
         },
-        IA32_PAT => {},
+        IA32_PERFEVTSEL0 | IA32_PERFEVTSEL1 => {}, // linux/9legacy
+        IA32_PMC0 | IA32_PMC1 => {},               // linux
+        IA32_PAT => {
+            let value = (high as u32 as u64) << 32 | low as u32 as u64;
+            for i in 0..8 {
+                let entry = (value >> (8 * i)) as u8;
+                if entry > 7 || entry == 2 || entry == 3 {
+                    trigger_gp(0);
+                    return;
+                }
+            }
+            // Cache timing and memory types are not modelled, but the register
+            // must retain the guest's selected types.
+            *pat = value;
+        },
         IA32_SPEC_CTRL => {},      // linux 5.19
         IA32_TSX_CTRL => {},       // linux 5.19
         MSR_TSX_FORCE_ABORT => {}, // linux 5.19
         IA32_MCU_OPT_CTRL => {},   // linux 5.19
+        MSR_AMD64_LS_CFG => {},    // linux 5.19
+        MSR_AMD64_DE_CFG => {},    // linux 6.1
         _ => {
             dbg_log!("Unknown msr: {:x}", index);
             dbg_assert!(false);
@@ -1235,10 +1295,15 @@ pub unsafe fn instr_0F32() {
     let index = read_reg32(ECX);
     dbg_log!("rdmsr ecx={:x}", index);
 
-    let mut low: i32 = 0;
-    let mut high: i32 = 0;
+    let mut low = 0;
+    let mut high = 0;
 
     match index {
+        MSR_EFER => {
+            let val = *efer;
+            low = val as i32;
+            high = (val >> 32) as i32;
+        },
         IA32_SYSENTER_CS => low = *sysenter_cs,
         IA32_SYSENTER_EIP => low = *sysenter_eip,
         IA32_SYSENTER_ESP => low = *sysenter_esp,
@@ -1252,7 +1317,7 @@ pub unsafe fn instr_0F32() {
         IA32_PLATFORM_ID => {},
         IA32_APIC_BASE => {
             if *acpi_enabled {
-                low = APIC_ADDRESS;
+                low = APIC_MEM_ADDRESS as i32;
                 if *apic_enabled {
                     low |= IA32_APIC_BASE_EN
                 }
@@ -1265,20 +1330,22 @@ pub unsafe fn instr_0F32() {
             // Enable Misc. Processor Features
             low = 1 << 0; // fast string
         },
-        IA32_RTIT_CTL => {
-            // linux4
-        },
+        IA32_RTIT_CTL => {}, // linux4
         MSR_SMI_COUNT => {},
-        IA32_MCG_CAP => {
-            // netbsd
+        IA32_MCG_CAP => {},                        // netbsd
+        IA32_PERFEVTSEL0 | IA32_PERFEVTSEL1 => {}, // linux/9legacy
+        IA32_PMC0 | IA32_PMC1 => {},               // linux
+        IA32_PAT => {
+            low = *pat as i32;
+            high = (*pat >> 32) as i32;
         },
-        IA32_PAT => {},
         MSR_PKG_C2_RESIDENCY => {},
         IA32_SPEC_CTRL => {},      // linux 5.19
         IA32_TSX_CTRL => {},       // linux 5.19
         MSR_TSX_FORCE_ABORT => {}, // linux 5.19
         IA32_MCU_OPT_CTRL => {},   // linux 5.19
         MSR_AMD64_LS_CFG => {},    // linux 5.19
+        MSR_AMD64_DE_CFG => {},    // linux 6.1
         _ => {
             dbg_log!("Unknown msr: {:x}", index);
             dbg_assert!(false);
@@ -1309,6 +1376,7 @@ pub unsafe fn instr_0F34() {
         *segment_is_null.offset(CS as isize) = false;
         *segment_limits.offset(CS as isize) = -1i32 as u32;
         *segment_offsets.offset(CS as isize) = 0;
+        *segment_access_bytes.offset(CS as isize) = 0x80 | (0 << 5) | 0x10 | 0x08 | 0x02; // P dpl0 S E RW
         update_cs_size(true);
         *cpl = 0;
         cpl_changed();
@@ -1316,6 +1384,7 @@ pub unsafe fn instr_0F34() {
         *segment_is_null.offset(SS as isize) = false;
         *segment_limits.offset(SS as isize) = -1i32 as u32;
         *segment_offsets.offset(SS as isize) = 0;
+        *segment_access_bytes.offset(SS as isize) = 0x80 | (0 << 5) | 0x10 | 0x02; // P dpl0 S RW
         *stack_size_32 = true;
         update_state_flags();
         return;
@@ -1336,6 +1405,7 @@ pub unsafe fn instr_0F35() {
         *segment_is_null.offset(CS as isize) = false;
         *segment_limits.offset(CS as isize) = -1i32 as u32;
         *segment_offsets.offset(CS as isize) = 0;
+        *segment_access_bytes.offset(CS as isize) = 0x80 | (3 << 5) | 0x10 | 0x08 | 0x02; // P dpl3 S E RW
         update_cs_size(true);
         *cpl = 3;
         cpl_changed();
@@ -1343,6 +1413,7 @@ pub unsafe fn instr_0F35() {
         *segment_is_null.offset(SS as isize) = false;
         *segment_limits.offset(SS as isize) = -1i32 as u32;
         *segment_offsets.offset(SS as isize) = 0;
+        *segment_access_bytes.offset(SS as isize) = 0x80 | (3 << 5) | 0x10 | 0x02; // P dpl3 S RW
         *stack_size_32 = true;
         update_state_flags();
         return;
@@ -2153,14 +2224,14 @@ pub unsafe fn instr_F30F5F_mem(addr: i32, r: i32) {
 #[no_mangle]
 pub unsafe fn instr_0F60(source: i32, r: i32) {
     // punpcklbw mm, mm/m32
-    let destination: [u8; 8] = std::mem::transmute(read_mmx64s(r));
-    let source: [u8; 4] = std::mem::transmute(source);
+    let destination: [u8; 8] = u64::to_le_bytes(read_mmx64s(r));
+    let source: [u8; 4] = i32::to_le_bytes(source);
     let mut result = [0; 8];
     for i in 0..4 {
         result[2 * i + 0] = destination[i];
         result[2 * i + 1] = source[i];
     }
-    write_mmx_reg64(r, std::mem::transmute(result));
+    write_mmx_reg64(r, u64::from_le_bytes(result));
     transition_fpu_to_mmx();
 }
 pub unsafe fn instr_0F60_reg(r1: i32, r2: i32) { instr_0F60(read_mmx32s(r1), r2); }
@@ -2171,7 +2242,7 @@ pub unsafe fn instr_0F60_mem(addr: i32, r: i32) {
 pub unsafe fn instr_660F60(source: reg128, r: i32) {
     // punpcklbw xmm, xmm/m128
     // XXX: Aligned access or #gp
-    let destination: [u8; 8] = std::mem::transmute(read_xmm64s(r));
+    let destination: [u8; 8] = u64::to_le_bytes(read_xmm64s(r));
     let mut result = reg128 { i8: [0; 16] };
     for i in 0..8 {
         result.u8[2 * i + 0] = destination[i];
@@ -2256,7 +2327,7 @@ pub unsafe fn instr_0F63(source: u64, r: i32) {
         result[i + 0] = saturate_sw_to_sb(destination[i] as i32);
         result[i + 4] = saturate_sw_to_sb(source[i] as i32);
     }
-    write_mmx_reg64(r, std::mem::transmute(result));
+    write_mmx_reg64(r, u64::from_le_bytes(result));
     transition_fpu_to_mmx();
 }
 pub unsafe fn instr_0F63_reg(r1: i32, r2: i32) { instr_0F63(read_mmx64s(r1), r2); }
@@ -2288,7 +2359,7 @@ pub unsafe fn instr_0F64(source: u64, r: i32) {
     for i in 0..8 {
         result[i] = if destination[i] > source[i] { 255 } else { 0 };
     }
-    write_mmx_reg64(r, std::mem::transmute(result));
+    write_mmx_reg64(r, u64::from_le_bytes(result));
     transition_fpu_to_mmx();
 }
 pub unsafe fn instr_0F64_reg(r1: i32, r2: i32) { instr_0F64(read_mmx64s(r1), r2); }
@@ -2384,7 +2455,7 @@ pub unsafe fn instr_0F67(source: u64, r: i32) {
         result[i + 0] = saturate_sw_to_ub(destination[i]);
         result[i + 4] = saturate_sw_to_ub(source[i]);
     }
-    write_mmx_reg64(r, std::mem::transmute(result));
+    write_mmx_reg64(r, u64::from_le_bytes(result));
     transition_fpu_to_mmx();
 }
 pub unsafe fn instr_0F67_reg(r1: i32, r2: i32) { instr_0F67(read_mmx64s(r1), r2); }
@@ -2410,14 +2481,14 @@ pub unsafe fn instr_660F67_mem(addr: i32, r: i32) {
 #[no_mangle]
 pub unsafe fn instr_0F68(source: u64, r: i32) {
     // punpckhbw mm, mm/m64
-    let destination: [u8; 8] = std::mem::transmute(read_mmx64s(r));
-    let source: [u8; 8] = std::mem::transmute(source);
+    let destination: [u8; 8] = u64::to_le_bytes(read_mmx64s(r));
+    let source: [u8; 8] = u64::to_le_bytes(source);
     let mut result: [u8; 8] = [0; 8];
     for i in 0..4 {
         result[2 * i + 0] = destination[i + 4];
         result[2 * i + 1] = source[i + 4];
     }
-    write_mmx_reg64(r, std::mem::transmute(result));
+    write_mmx_reg64(r, u64::from_le_bytes(result));
     transition_fpu_to_mmx();
 }
 pub unsafe fn instr_0F68_reg(r1: i32, r2: i32) { instr_0F68(read_mmx64s(r1), r2); }
@@ -2832,13 +2903,13 @@ pub unsafe fn instr_660F73_7_reg(r: i32, imm8: i32) {
 #[no_mangle]
 pub unsafe fn instr_0F74(source: u64, r: i32) {
     // pcmpeqb mm, mm/m64
-    let destination: [u8; 8] = std::mem::transmute(read_mmx64s(r));
-    let source: [u8; 8] = std::mem::transmute(source);
+    let destination: [u8; 8] = u64::to_le_bytes(read_mmx64s(r));
+    let source: [u8; 8] = u64::to_le_bytes(source);
     let mut result: [u8; 8] = [0; 8];
     for i in 0..8 {
         result[i] = if destination[i] == source[i] { 255 } else { 0 };
     }
-    write_mmx_reg64(r, std::mem::transmute(result));
+    write_mmx_reg64(r, u64::from_le_bytes(result));
     transition_fpu_to_mmx();
 }
 pub unsafe fn instr_0F74_reg(r1: i32, r2: i32) { instr_0F74(read_mmx64s(r1), r2); }
@@ -2928,6 +2999,7 @@ pub unsafe fn instr_0F77() {
     // emms
     fpu_set_tag_word(0xFFFF);
 }
+
 #[no_mangle]
 pub unsafe fn instr_0F78() { unimplemented_sse(); }
 #[no_mangle]
@@ -2936,21 +3008,103 @@ pub unsafe fn instr_0F79() { unimplemented_sse(); }
 pub unsafe fn instr_0F7A() { unimplemented_sse(); }
 #[no_mangle]
 pub unsafe fn instr_0F7B() { unimplemented_sse(); }
+
 #[no_mangle]
 pub unsafe fn instr_0F7C() { unimplemented_sse(); }
 #[no_mangle]
 pub unsafe fn instr_0F7D() { unimplemented_sse(); }
 
 #[no_mangle]
+pub unsafe fn instr_660F7C(source: reg128, r: i32) {
+    // haddpd xmm1, xmm2/m128
+    let destination = read_xmm128s(r);
+    write_xmm_reg128(
+        r,
+        reg128 {
+            f64: [
+                destination.f64[0] + destination.f64[1],
+                source.f64[0] + source.f64[1],
+            ],
+        },
+    );
+}
+pub unsafe fn instr_660F7C_reg(r1: i32, r2: i32) { instr_660F7C(read_xmm128s(r1), r2); }
+pub unsafe fn instr_660F7C_mem(addr: i32, r: i32) {
+    instr_660F7C(return_on_pagefault!(safe_read128s(addr)), r);
+}
+#[no_mangle]
+pub unsafe fn instr_F20F7C(source: reg128, r: i32) {
+    // haddps xmm, xmm/mem128
+    let destination = read_xmm128s(r);
+    write_xmm_reg128(
+        r,
+        reg128 {
+            f32: [
+                destination.f32[0] + destination.f32[1],
+                destination.f32[2] + destination.f32[3],
+                source.f32[0] + source.f32[1],
+                source.f32[2] + source.f32[3],
+            ],
+        },
+    );
+}
+pub unsafe fn instr_F20F7C_reg(r1: i32, r2: i32) { instr_F20F7C(read_xmm128s(r1), r2); }
+pub unsafe fn instr_F20F7C_mem(addr: i32, r: i32) {
+    instr_F20F7C(return_on_pagefault!(safe_read128s(addr)), r);
+}
+
+#[no_mangle]
+pub unsafe fn instr_660F7D(source: reg128, r: i32) {
+    // hsubpd xmm1, xmm2/m128
+    let destination = read_xmm128s(r);
+    write_xmm_reg128(
+        r,
+        reg128 {
+            f64: [
+                destination.f64[0] - destination.f64[1],
+                source.f64[0] - source.f64[1],
+            ],
+        },
+    );
+}
+pub unsafe fn instr_660F7D_reg(r1: i32, r2: i32) { instr_660F7D(read_xmm128s(r1), r2); }
+pub unsafe fn instr_660F7D_mem(addr: i32, r: i32) {
+    instr_660F7D(return_on_pagefault!(safe_read128s(addr)), r);
+}
+
+#[no_mangle]
+pub unsafe fn instr_F20F7D(source: reg128, r: i32) {
+    // hsubps xmm1, xmm2/m128
+    let destination = read_xmm128s(r);
+    write_xmm_reg128(
+        r,
+        reg128 {
+            f32: [
+                destination.f32[0] - destination.f32[1],
+                destination.f32[2] - destination.f32[3],
+                source.f32[0] - source.f32[1],
+                source.f32[2] - source.f32[3],
+            ],
+        },
+    );
+}
+pub unsafe fn instr_F20F7D_reg(r1: i32, r2: i32) { instr_F20F7D(read_xmm128s(r1), r2); }
+pub unsafe fn instr_F20F7D_mem(addr: i32, r: i32) {
+    instr_F20F7D(return_on_pagefault!(safe_read128s(addr)), r);
+}
+
+#[no_mangle]
 pub unsafe fn instr_0F7E(r: i32) -> i32 {
     // movd r/m32, mm
-    let data = read_mmx64s(r);
-    transition_fpu_to_mmx();
-    return data as i32;
+    return read_mmx64s(r) as i32;
 }
-pub unsafe fn instr_0F7E_reg(r1: i32, r2: i32) { write_reg32(r1, instr_0F7E(r2)); }
+pub unsafe fn instr_0F7E_reg(r1: i32, r2: i32) {
+    write_reg32(r1, instr_0F7E(r2));
+    transition_fpu_to_mmx();
+}
 pub unsafe fn instr_0F7E_mem(addr: i32, r: i32) {
     return_on_pagefault!(safe_write32(addr, instr_0F7E(r)));
+    transition_fpu_to_mmx();
 }
 pub unsafe fn instr_660F7E(r: i32) -> i32 {
     // movd r/m32, xmm
@@ -2974,7 +3128,6 @@ pub unsafe fn instr_F30F7E_reg(r1: i32, r2: i32) {
 #[no_mangle]
 pub unsafe fn instr_0F7F(r: i32) -> u64 {
     // movq mm/m64, mm
-    transition_fpu_to_mmx();
     read_mmx64s(r)
 }
 pub unsafe fn instr_0F7F_mem(addr: i32, r: i32) {
@@ -3124,18 +3277,17 @@ pub unsafe fn instr_0FA2() {
         },
 
         1 => {
-            // pentium
-            eax = 3 | 6 << 4 | 15 << 8;
+            eax = 3 | 7 << 4 | 6 << 8; // pentium3
             ebx = 1 << 16 | 8 << 8; // cpu count, clflush size
-            ecx = 1 << 23 | 1 << 30; // popcnt, rdrand
+            ecx = 1 << 0 | 1 << 23 | 1 << 30; // sse3, popcnt, rdrand
             let vme = 0 << 1;
-            if ::config::VMWARE_HYPERVISOR_PORT {
+            if config::VMWARE_HYPERVISOR_PORT {
                 ecx |= 1 << 31
             }; // hypervisor
-            edx = (if true /* have fpu */ { 1 } else {  0 }) |      // fpu
-                    vme | 1 << 3 | 1 << 4 | 1 << 5 | 1 << 6 |  // vme, pse, tsc, msr, pae
-                    1 << 8 | 1 << 11 | 1 << 13 | 1 << 15 | // cx8, sep, pge, cmov
-                    1 << 23 | 1 << 24 | 1 << 25 | 1 << 26; // mmx, fxsr, sse1, sse2
+            edx = (if true /* have fpu */ { 1 } else { 0 }) |      // fpu
+                vme | 1 << 3 | 1 << 4 | 1 << 5 | 1 << 6 |  // vme, pse, tsc, msr, pae
+                1 << 8 | 1 << 11 | 1 << 13 | 1 << 15 | 1 << 16 | 1 << 19 | // cx8, sep, pge, cmov, pat, clflush
+                1 << 23 | 1 << 24 | 1 << 25 | 1 << 26; // mmx, fxsr, sse1, sse2
 
             if *acpi_enabled
             //&& this.apic_enabled[0])
@@ -3196,18 +3348,33 @@ pub unsafe fn instr_0FA2() {
 
         0x80000000 => {
             // maximum supported extended level
-            eax = 5;
+            eax = 0x80000008u32 as i32;
             // other registers are reserved
+        },
+
+        0x80000001 => {
+            let vme = 0 << 1;
+            edx = (if true /* have fpu */ { 1 } else { 0 }) |      // fpu
+                vme | 1 << 3 | 1 << 4 | 1 << 5 | 1 << 6 |  // vme, pse, tsc, msr, pae
+                1 << 8 | 1 << 13 | 1 << 15 | 1 << 20 | // cx8, pge, cmov, nx
+                1 << 23 | 1 << 24; // mmx, fxsr
         },
 
         0x40000000 => {
             // hypervisor
-            if ::config::VMWARE_HYPERVISOR_PORT {
+            if config::VMWARE_HYPERVISOR_PORT {
                 // h("Ware".split("").reduce((a, c, i) => a | c.charCodeAt(0) << i * 8, 0))
                 ebx = 0x61774D56 | 0; // VMwa
                 ecx = 0x4D566572 | 0; // reVM
                 edx = 0x65726177 | 0; // ware
             }
+        },
+
+        0x80000008 => {
+            eax = 32 | 32 << 8; // physical and linear address widths
+            ebx = 0;
+            ecx = 0;
+            edx = 0;
         },
 
         0x15 => {
@@ -3424,9 +3591,11 @@ pub unsafe fn instr_0FAE_7_reg(_r: i32) {
     // sfence
 }
 #[no_mangle]
-pub unsafe fn instr_0FAE_7_mem(_addr: i32) {
+pub unsafe fn instr_0FAE_7_mem(addr: i32) {
     // clflush
-    undefined_instruction();
+    // No hardware caches are modelled, but the operand must pass the same
+    // address translation and permission checks as a byte load.
+    return_on_pagefault!(translate_address_read(addr));
 }
 pub unsafe fn instr16_0FAF_mem(addr: i32, r: i32) {
     write_reg16(
@@ -3703,7 +3872,7 @@ pub unsafe fn instr_F20FC2_mem(addr: i32, r: i32, imm: i32) {
 pub unsafe fn instr_F30FC2(source: i32, r: i32, imm8: i32) {
     // cmpss xmm, xmm/m32
     let destination = read_xmm_f32(r);
-    let source: f32 = std::mem::transmute(source);
+    let source: f32 = f32::from_bits(i32::cast_unsigned(source));
     let result = if sse_comparison(imm8, destination as f64, source as f64) { -1 } else { 0 };
     write_xmm32(r, result);
 }
@@ -3827,7 +3996,7 @@ pub unsafe fn instr32_0FC7_1_mem(addr: i32) { instr16_0FC7_1_mem(addr) }
 #[no_mangle]
 pub unsafe fn instr16_0FC7_6_reg(r: i32) {
     // rdrand
-    let rand = get_rand_int();
+    let rand = js::get_rand_int();
     write_reg16(r, rand);
     *flags &= !FLAGS_ALL;
     *flags |= 1;
@@ -3836,7 +4005,7 @@ pub unsafe fn instr16_0FC7_6_reg(r: i32) {
 #[no_mangle]
 pub unsafe fn instr32_0FC7_6_reg(r: i32) {
     // rdrand
-    let rand = get_rand_int();
+    let rand = js::get_rand_int();
     write_reg32(r, rand);
     *flags &= !FLAGS_ALL;
     *flags |= 1;
@@ -4014,7 +4183,7 @@ pub unsafe fn instr_0FD7_mem(_addr: i32, _r: i32) { trigger_ud(); }
 #[no_mangle]
 pub unsafe fn instr_0FD7(r1: i32) -> i32 {
     // pmovmskb r, mm
-    let x: [u8; 8] = std::mem::transmute(read_mmx64s(r1));
+    let x: [u8; 8] = u64::to_le_bytes(read_mmx64s(r1));
     let mut result = 0;
     for i in 0..8 {
         result |= x[i] as i32 >> 7 << i
@@ -4038,13 +4207,13 @@ pub unsafe fn instr_660FD7_reg(r1: i32, r2: i32) { write_reg32(r2, instr_660FD7(
 #[no_mangle]
 pub unsafe fn instr_0FD8(source: u64, r: i32) {
     // psubusb mm, mm/m64
-    let destination: [u8; 8] = std::mem::transmute(read_mmx64s(r));
-    let source: [u8; 8] = std::mem::transmute(source);
+    let destination: [u8; 8] = u64::to_le_bytes(read_mmx64s(r));
+    let source: [u8; 8] = u64::to_le_bytes(source);
     let mut result = [0; 8];
     for i in 0..8 {
         result[i] = saturate_sd_to_ub(destination[i] as i32 - source[i] as i32) as u8;
     }
-    write_mmx_reg64(r, std::mem::transmute(result));
+    write_mmx_reg64(r, u64::from_le_bytes(result));
     transition_fpu_to_mmx();
 }
 pub unsafe fn instr_0FD8_reg(r1: i32, r2: i32) { instr_0FD8(read_mmx64s(r1), r2); }
@@ -4098,13 +4267,13 @@ pub unsafe fn instr_660FD9_mem(addr: i32, r: i32) {
 #[no_mangle]
 pub unsafe fn instr_0FDA(source: u64, r: i32) {
     // pminub mm, mm/m64
-    let destination: [u8; 8] = std::mem::transmute(read_mmx64s(r));
-    let source: [u8; 8] = std::mem::transmute(source);
+    let destination: [u8; 8] = u64::to_le_bytes(read_mmx64s(r));
+    let source: [u8; 8] = u64::to_le_bytes(source);
     let mut result = [0; 8];
     for i in 0..8 {
         result[i] = u8::min(source[i], destination[i])
     }
-    write_mmx_reg64(r, std::mem::transmute(result));
+    write_mmx_reg64(r, u64::from_le_bytes(result));
     transition_fpu_to_mmx();
 }
 pub unsafe fn instr_0FDA_reg(r1: i32, r2: i32) { instr_0FDA(read_mmx64s(r1), r2); }
@@ -4150,13 +4319,13 @@ pub unsafe fn instr_660FDB_mem(addr: i32, r: i32) {
 #[no_mangle]
 pub unsafe fn instr_0FDC(source: u64, r: i32) {
     // paddusb mm, mm/m64
-    let destination: [u8; 8] = std::mem::transmute(read_mmx64s(r));
-    let source: [u8; 8] = std::mem::transmute(source);
+    let destination: [u8; 8] = u64::to_le_bytes(read_mmx64s(r));
+    let source: [u8; 8] = u64::to_le_bytes(source);
     let mut result = [0; 8];
     for i in 0..8 {
         result[i] = saturate_ud_to_ub(destination[i] as u32 + source[i] as u32);
     }
-    write_mmx_reg64(r, std::mem::transmute(result));
+    write_mmx_reg64(r, u64::from_le_bytes(result));
     transition_fpu_to_mmx();
 }
 pub unsafe fn instr_0FDC_reg(r1: i32, r2: i32) { instr_0FDC(read_mmx64s(r1), r2); }
@@ -4212,13 +4381,13 @@ pub unsafe fn instr_660FDD_mem(addr: i32, r: i32) {
 #[no_mangle]
 pub unsafe fn instr_0FDE(source: u64, r: i32) {
     // pmaxub mm, mm/m64
-    let destination: [u8; 8] = std::mem::transmute(read_mmx64s(r));
-    let source: [u8; 8] = std::mem::transmute(source);
+    let destination: [u8; 8] = u64::to_le_bytes(read_mmx64s(r));
+    let source: [u8; 8] = u64::to_le_bytes(source);
     let mut result = [0; 8];
     for i in 0..8 {
         result[i] = u8::max(source[i], destination[i])
     }
-    write_mmx_reg64(r, std::mem::transmute(result));
+    write_mmx_reg64(r, u64::from_le_bytes(result));
     transition_fpu_to_mmx();
 }
 pub unsafe fn instr_0FDE_reg(r1: i32, r2: i32) { instr_0FDE(read_mmx64s(r1), r2); }
@@ -4264,13 +4433,13 @@ pub unsafe fn instr_660FDF_mem(addr: i32, r: i32) {
 #[no_mangle]
 pub unsafe fn instr_0FE0(source: u64, r: i32) {
     // pavgb mm, mm/m64
-    let destination: [u8; 8] = std::mem::transmute(read_mmx64s(r));
-    let source: [u8; 8] = std::mem::transmute(source);
+    let destination: [u8; 8] = u64::to_le_bytes(read_mmx64s(r));
+    let source: [u8; 8] = u64::to_le_bytes(source);
     let mut result = [0; 8];
     for i in 0..8 {
         result[i] = (destination[i] as i32 + source[i] as i32 + 1 >> 1) as u8;
     }
-    write_mmx_reg64(r, std::mem::transmute(result));
+    write_mmx_reg64(r, u64::from_le_bytes(result));
     transition_fpu_to_mmx();
 }
 pub unsafe fn instr_0FE0_reg(r1: i32, r2: i32) { instr_0FE0(read_mmx64s(r1), r2); }
@@ -4843,8 +5012,8 @@ pub unsafe fn instr_660FF5_mem(addr: i32, r: i32) {
 #[no_mangle]
 pub unsafe fn instr_0FF6(source: u64, r: i32) {
     // psadbw mm, mm/m64
-    let destination: [u8; 8] = std::mem::transmute(read_mmx64s(r));
-    let source: [u8; 8] = std::mem::transmute(source);
+    let destination: [u8; 8] = u64::to_le_bytes(read_mmx64s(r));
+    let source: [u8; 8] = u64::to_le_bytes(source);
     let mut sum = 0;
     for i in 0..8 {
         sum += (destination[i] as i32 - source[i] as i32).abs() as u64;
@@ -4878,15 +5047,9 @@ pub unsafe fn instr_0FF7_mem(_addr: i32, _r: i32) { trigger_ud(); }
 #[no_mangle]
 pub unsafe fn maskmovq(r1: i32, r2: i32, addr: i32) {
     // maskmovq mm, mm
-    let source: [u8; 8] = std::mem::transmute(read_mmx64s(r2));
-    let mask: [u8; 8] = std::mem::transmute(read_mmx64s(r1));
-    match writable_or_pagefault(addr, 8) {
-        Ok(()) => *page_fault = false,
-        Err(()) => {
-            *page_fault = true;
-            return;
-        },
-    }
+    // the caller must have called writable_or_pagefault
+    let source: [u8; 8] = u64::to_le_bytes(read_mmx64s(r2));
+    let mask: [u8; 8] = u64::to_le_bytes(read_mmx64s(r1));
     for i in 0..8 {
         if 0 != mask[i] & 0x80 {
             safe_write8(addr + i as i32, source[i] as i32).unwrap();
@@ -4895,26 +5058,18 @@ pub unsafe fn maskmovq(r1: i32, r2: i32, addr: i32) {
     transition_fpu_to_mmx();
 }
 pub unsafe fn instr_0FF7_reg(r1: i32, r2: i32) {
-    maskmovq(
-        r1,
-        r2,
-        return_on_pagefault!(get_seg_prefix_ds(get_reg_asize(EDI))),
-    )
+    let addr = return_on_pagefault!(get_seg_prefix_ds(get_reg_asize(EDI)));
+    return_on_pagefault!(writable_or_pagefault(addr, 8));
+    maskmovq(r1, r2, addr)
 }
 
 pub unsafe fn instr_660FF7_mem(_addr: i32, _r: i32) { trigger_ud(); }
 #[no_mangle]
 pub unsafe fn maskmovdqu(r1: i32, r2: i32, addr: i32) {
     // maskmovdqu xmm, xmm
+    // the caller must have called writable_or_pagefault
     let source = read_xmm128s(r2);
     let mask = read_xmm128s(r1);
-    match writable_or_pagefault(addr, 16) {
-        Ok(()) => *page_fault = false,
-        Err(()) => {
-            *page_fault = true;
-            return;
-        },
-    }
     for i in 0..16 {
         if 0 != mask.u8[i] & 0x80 {
             safe_write8(addr + i as i32, source.u8[i] as i32).unwrap();
@@ -4922,22 +5077,20 @@ pub unsafe fn maskmovdqu(r1: i32, r2: i32, addr: i32) {
     }
 }
 pub unsafe fn instr_660FF7_reg(r1: i32, r2: i32) {
-    maskmovdqu(
-        r1,
-        r2,
-        return_on_pagefault!(get_seg_prefix_ds(get_reg_asize(EDI))),
-    )
+    let addr = return_on_pagefault!(get_seg_prefix_ds(get_reg_asize(EDI)));
+    return_on_pagefault!(writable_or_pagefault(addr, 16));
+    maskmovdqu(r1, r2, addr)
 }
 #[no_mangle]
 pub unsafe fn instr_0FF8(source: u64, r: i32) {
     // psubb mm, mm/m64
-    let destination: [u8; 8] = std::mem::transmute(read_mmx64s(r));
-    let source: [u8; 8] = std::mem::transmute(source);
+    let destination: [u8; 8] = u64::to_le_bytes(read_mmx64s(r));
+    let source: [u8; 8] = u64::to_le_bytes(source);
     let mut result = [0; 8];
     for i in 0..8 {
         result[i] = destination[i] - source[i];
     }
-    write_mmx_reg64(r, std::mem::transmute(result));
+    write_mmx_reg64(r, u64::from_le_bytes(result));
     transition_fpu_to_mmx();
 }
 pub unsafe fn instr_0FF8_reg(r1: i32, r2: i32) { instr_0FF8(read_mmx64s(r1), r2); }
@@ -5049,13 +5202,13 @@ pub unsafe fn instr_660FFB_mem(addr: i32, r: i32) {
 #[no_mangle]
 pub unsafe fn instr_0FFC(source: u64, r: i32) {
     // paddb mm, mm/m64
-    let destination: [u8; 8] = std::mem::transmute(read_mmx64s(r));
-    let source: [u8; 8] = std::mem::transmute(source);
+    let destination: [u8; 8] = u64::to_le_bytes(read_mmx64s(r));
+    let source: [u8; 8] = u64::to_le_bytes(source);
     let mut result = [0; 8];
     for i in 0..8 {
         result[i] = destination[i] + source[i];
     }
-    write_mmx_reg64(r, std::mem::transmute(result));
+    write_mmx_reg64(r, u64::from_le_bytes(result));
     transition_fpu_to_mmx();
 }
 pub unsafe fn instr_0FFC_reg(r1: i32, r2: i32) { instr_0FFC(read_mmx64s(r1), r2); }

@@ -1,6 +1,8 @@
 importScripts("../build/libv86.js");
 
-var emulator = new V86Starter({
+/* global V86 */
+
+var emulator = new V86({
     wasm_path: "../build/v86.wasm",
     memory_size: 32 * 1024 * 1024,
     vga_memory_size: 2 * 1024 * 1024,
@@ -17,8 +19,9 @@ var emulator = new V86Starter({
 });
 
 
-emulator.add_listener("serial0-output-char", function(chr)
+emulator.add_listener("serial0-output-byte", function(byte)
 {
+    var chr = String.fromCharCode(byte);
     this.postMessage(chr);
 }.bind(this));
 
@@ -26,4 +29,3 @@ this.onmessage = function(e)
 {
     emulator.serial0_send(e.data);
 };
-
